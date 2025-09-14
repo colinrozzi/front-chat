@@ -5,28 +5,129 @@ use bindings::exports::theater::simple::actor::Guest;
 use bindings::exports::theater::simple::http_handlers::Guest as HttpHandlersGuest;
 use bindings::theater::simple::http_framework::{self, HandlerId, ServerId};
 use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, ServerConfig};
-use bindings::theater::simple::runtime;
+use bindings::theater::simple::websocket_types::{MessageType, WebsocketMessage};
+use bindings::theater::simple::runtime::log;
+// TODO: Add these imports when available in theater-simple
+// use bindings::theater::simple::supervisor::spawn;
+// use bindings::theater::simple::random::generate_uuid;
+// use bindings::theater::simple::message_server_host::send;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 struct Component;
 
-// Simple state to track our HTTP server
-#[derive(Clone)]
-struct ServerState {
+// Chat state for the front-chat actor
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct FrontChatState {
     server_id: ServerId,
+    chat_state_id: Option<String>,
+    conversation_id: String,
+    active_connections: HashMap<u64, ConnectionInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ConnectionInfo {
+    connected_at: u64,
+}
+
+// Client message protocol
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+enum ClientRequest {
+    #[serde(rename = "send_message")]
+    SendMessage { content: String },
+    #[serde(rename = "get_conversation")]
+    GetConversation,
+    #[serde(rename = "update_settings")]
+    UpdateSettings { settings: ClientSettings },
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ClientSettings {
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+    model: Option<String>,
+}
+
+// Server response protocol
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+enum ServerResponse {
+    #[serde(rename = "message_added")]
+    MessageAdded { message: ChatMessage },
+    #[serde(rename = "message_update")]
+    MessageUpdate { message: ChatMessage },
+    #[serde(rename = "conversation_state")]
+    ConversationState { 
+        messages: Vec<ChatMessage>,
+        conversation_id: String,
+    },
+    #[serde(rename = "error")]
+    Error { message: String },
+    #[serde(rename = "connected")]
+    Connected { conversation_id: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ChatMessage {
+    id: String,
+    role: String, // "user" or "assistant"
+    content: String,
+    timestamp: u64,
+    finished: Option<bool>,
+}
+
+// Chat-state actor message protocol (simplified for demo)
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+enum ChatStateRequest {
+    #[serde(rename = "send_message")]
+    SendMessage { content: String },
+    #[serde(rename = "get_conversation")]
+    GetConversation,
 }
 
 // --- State Management ---
 
-fn get_server_state(state_bytes: &Option<Vec<u8>>) -> Result<ServerState, String> {
-    let bytes = state_bytes.as_ref().ok_or("Server state is not set")?;
-    let state_str = String::from_utf8(bytes.clone()).map_err(|e| e.to_string())?;
-    let server_id = state_str.parse::<u64>().map_err(|e| e.to_string())?;
-    
-    Ok(ServerState { server_id })
+fn get_state(state_bytes: &Option<Vec<u8>>) -> Result<FrontChatState, String> {
+    match state_bytes {
+        Some(bytes) => {
+            serde_json::from_slice(bytes).map_err(|e| format!("Failed to deserialize state: {}", e))
+        }
+        None => Err("No state available".to_string()),
+    }
 }
 
-fn set_server_state(state: &ServerState) -> Vec<u8> {
-    state.server_id.to_string().into_bytes()
+fn set_state(state: &FrontChatState) -> Vec<u8> {
+    serde_json::to_vec(state).unwrap_or_default()
+}
+
+// --- Helper Functions ---
+
+fn create_websocket_message(response: &ServerResponse) -> Result<WebsocketMessage, String> {
+    let json_text = serde_json::to_string(response)
+        .map_err(|e| format!("Failed to serialize response: {}", e))?;
+    
+    Ok(WebsocketMessage {
+        ty: MessageType::Text,
+        text: Some(json_text),
+        data: None,
+    })
+}
+
+fn broadcast_to_connections(
+    state: &FrontChatState, 
+    response: &ServerResponse
+) -> Result<Vec<WebsocketMessage>, String> {
+    if state.active_connections.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let ws_message = create_websocket_message(response)?;
+    
+    // For now, we'll return one message per connection
+    // The WebSocket framework will handle the actual broadcasting
+    Ok(vec![ws_message])
 }
 
 // --- Actor Implementation ---
@@ -34,8 +135,11 @@ fn set_server_state(state: &ServerState) -> Vec<u8> {
 impl Guest for Component {
     fn init(_data: Option<Vec<u8>>, params: (String,)) -> Result<(Option<Vec<u8>>,), String> {
         let (actor_id,) = params;
-        runtime::log(&format!("front-chat HTTP server actor {} initializing", actor_id));
+        log(&format!("front-chat actor {} initializing", actor_id));
 
+        // Generate conversation ID (simple UUID for now)
+        let conversation_id = format!("conv_{}", actor_id);
+        
         // Create HTTP server configuration
         let config = ServerConfig {
             port: Some(8080),
@@ -46,26 +150,47 @@ impl Guest for Component {
         // Create the HTTP server
         let server_id = http_framework::create_server(&config).map_err(|e| e.to_string())?;
 
-        // Register handler for our routes
-        let main_handler = http_framework::register_handler("main").map_err(|e| e.to_string())?;
+        // Register handlers
+        let static_handler = http_framework::register_handler("static").map_err(|e| e.to_string())?;
+        let ws_handler = http_framework::register_handler("websocket").map_err(|e| e.to_string())?;
 
-        // Set up routes
-        http_framework::add_route(server_id, "/", "GET", main_handler)
+        // Set up HTTP routes
+        http_framework::add_route(server_id, "/", "GET", static_handler)
             .map_err(|e| e.to_string())?;
-        http_framework::add_route(server_id, "/health", "GET", main_handler)
+        http_framework::add_route(server_id, "/health", "GET", static_handler)
             .map_err(|e| e.to_string())?;
+
+        // Enable WebSocket
+        http_framework::enable_websocket(
+            server_id,
+            "/ws",
+            None,          // connect handler (optional)
+            ws_handler,    // message handler (required)
+            None,          // disconnect handler (optional)
+        ).map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
+
+        // TODO: Spawn chat-state actor
+        // For now, we'll simulate it
+        let chat_state_id = None; // Will implement actor spawning next
 
         // Start the server
         http_framework::start_server(server_id).map_err(|e| e.to_string())?;
         
-        runtime::log("front-chat HTTP server started on port 8080");
-        runtime::log("Available endpoints:");
-        runtime::log("  GET / - Welcome message");
-        runtime::log("  GET /health - Health check");
+        log(&format!("front-chat server started on port 8080 for conversation {}", conversation_id));
+        log("Available endpoints:");
+        log("  GET / - Chat interface");
+        log("  GET /health - Health check");
+        log("  WS /ws - WebSocket chat connection");
 
-        // Save server state
-        let initial_state = ServerState { server_id };
-        Ok((Some(set_server_state(&initial_state)),))
+        // Save initial state
+        let initial_state = FrontChatState {
+            server_id,
+            chat_state_id,
+            conversation_id,
+            active_connections: HashMap::new(),
+        };
+        
+        Ok((Some(set_state(&initial_state)),))
     }
 }
 
@@ -76,13 +201,13 @@ impl HttpHandlersGuest for Component {
     ) -> Result<(Option<Vec<u8>>, (HttpResponse,)), String> {
         let (_handler_id, request) = params;
         
-        runtime::log(&format!(
+        log(&format!(
             "Handling {} request to {}",
             request.method, request.uri
         ));
 
         let response = match (request.method.as_str(), request.uri.as_str()) {
-            ("GET", "/") => generate_welcome_response(),
+            ("GET", "/") => generate_chat_interface(),
             ("GET", "/health") => generate_health_response(),
             _ => generate_404_response(),
         };
@@ -102,9 +227,6 @@ impl HttpHandlersGuest for Component {
     > {
         let (_, request) = params;
         
-        // Simple middleware - just log and proceed
-        runtime::log(&format!("front-chat request: {} {}", request.method, request.uri));
-        
         let middleware_result = bindings::theater::simple::http_types::MiddlewareResult {
             proceed: true,
             request,
@@ -115,102 +237,165 @@ impl HttpHandlersGuest for Component {
 
     fn handle_websocket_connect(
         state: Option<Vec<u8>>,
-        _: (HandlerId, u64, String, Option<String>),
+        params: (HandlerId, u64, String, Option<String>),
     ) -> Result<(Option<Vec<u8>>,), String> {
-        // WebSocket not implemented yet - just return state unchanged
-        Ok((state,))
+        let (_handler_id, connection_id, _path, _protocol) = params;
+        
+        let mut state = get_state(&state)?;
+        
+        log(&format!("WebSocket connection {} established", connection_id));
+        
+        // Add connection to active connections
+        state.active_connections.insert(connection_id, ConnectionInfo {
+            connected_at: 0, // TODO: Get actual timestamp
+        });
+
+        // Send welcome message
+        let welcome_response = ServerResponse::Connected {
+            conversation_id: state.conversation_id.clone(),
+        };
+        
+        if let Ok(ws_message) = create_websocket_message(&welcome_response) {
+            // Send welcome message to this specific connection
+            if let Err(e) = http_framework::send_websocket_message(state.server_id, connection_id, &ws_message) {
+                log(&format!("Failed to send welcome message: {}", e));
+            }
+        }
+
+        Ok((Some(set_state(&state)),))
     }
 
     fn handle_websocket_message(
         state: Option<Vec<u8>>,
-        _: (
-            HandlerId,
-            u64,
-            bindings::theater::simple::websocket_types::WebsocketMessage,
-        ),
-    ) -> Result<
-        (
-            Option<Vec<u8>>,
-            (Vec<bindings::theater::simple::websocket_types::WebsocketMessage>,),
-        ),
-        String,
-    > {
-        // WebSocket not implemented yet - return no messages
-        Ok((state, (vec![],)))
+        params: (HandlerId, u64, WebsocketMessage),
+    ) -> Result<(Option<Vec<u8>>, (Vec<WebsocketMessage>,)), String> {
+        let (_handler_id, connection_id, message) = params;
+        
+        let mut state = get_state(&state)?;
+        
+        match message.ty {
+            MessageType::Text => {
+                if let Some(text) = message.text {
+                    log(&format!("Received WebSocket message from {}: {}", connection_id, text));
+                    
+                    // Parse client request
+                    match serde_json::from_str::<ClientRequest>(&text) {
+                        Ok(request) => {
+                            let response_messages = handle_client_request(&mut state, request)?;
+                            Ok((Some(set_state(&state)), (response_messages,)))
+                        }
+                        Err(e) => {
+                            log(&format!("Failed to parse client request: {}", e));
+                            let error_response = ServerResponse::Error {
+                                message: format!("Invalid request format: {}", e),
+                            };
+                            let error_messages = broadcast_to_connections(&state, &error_response)?;
+                            Ok((Some(set_state(&state)), (error_messages,)))
+                        }
+                    }
+                } else {
+                    Ok((Some(set_state(&state)), (vec![],)))
+                }
+            }
+            _ => {
+                // Handle other message types (ping, pong, etc.)
+                Ok((Some(set_state(&state)), (vec![],)))
+            }
+        }
     }
 
     fn handle_websocket_disconnect(
         state: Option<Vec<u8>>,
-        _: (HandlerId, u64),
+        params: (HandlerId, u64),
     ) -> Result<(Option<Vec<u8>>,), String> {
-        // WebSocket not implemented yet - just return state unchanged
-        Ok((state,))
+        let (_handler_id, connection_id) = params;
+        
+        let mut state = get_state(&state)?;
+        
+        log(&format!("WebSocket connection {} disconnected", connection_id));
+        
+        // Remove connection from active connections
+        state.active_connections.remove(&connection_id);
+
+        Ok((Some(set_state(&state)),))
+    }
+}
+
+// --- Client Request Handling ---
+
+fn handle_client_request(
+    state: &mut FrontChatState,
+    request: ClientRequest,
+) -> Result<Vec<WebsocketMessage>, String> {
+    match request {
+        ClientRequest::SendMessage { content } => {
+            log(&format!("Processing send_message: {}", content));
+            
+            // Create user message
+            let user_message = ChatMessage {
+                id: format!("msg_user_{}", content.len()), // Simple ID for now
+                role: "user".to_string(),
+                content: content.clone(),
+                timestamp: 0, // TODO: Get actual timestamp
+                finished: Some(true),
+            };
+            
+            // Broadcast user message
+            let user_response = ServerResponse::MessageAdded {
+                message: user_message,
+            };
+            
+            // TODO: Send request to chat-state actor
+            // For now, simulate an assistant response
+            let assistant_message = ChatMessage {
+                id: format!("msg_assistant_{}", content.len()), // Simple ID for now
+                role: "assistant".to_string(),
+                content: format!("Echo: {}", content),
+                timestamp: 0, // TODO: Get actual timestamp
+                finished: Some(true),
+            };
+            
+            let assistant_response = ServerResponse::MessageAdded {
+                message: assistant_message,
+            };
+            
+            // Create response messages
+            let mut messages = broadcast_to_connections(state, &user_response)?;
+            messages.extend(broadcast_to_connections(state, &assistant_response)?);
+            
+            Ok(messages)
+        }
+        ClientRequest::GetConversation => {
+            log("Processing get_conversation");
+            
+            // TODO: Get actual conversation from chat-state
+            // For now, return empty conversation
+            let response = ServerResponse::ConversationState {
+                messages: vec![],
+                conversation_id: state.conversation_id.clone(),
+            };
+            
+            broadcast_to_connections(state, &response)
+        }
+        ClientRequest::UpdateSettings { settings: _settings } => {
+            log("Processing update_settings");
+            
+            // TODO: Forward to chat-state actor
+            // For now, just acknowledge
+            let response = ServerResponse::Error {
+                message: "Settings update not implemented yet".to_string(),
+            };
+            
+            broadcast_to_connections(state, &response)
+        }
     }
 }
 
 // --- Response Generation Functions ---
 
-fn generate_welcome_response() -> HttpResponse {
-    let html_content = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>front-chat HTTP Server</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 2rem;
-            background: #f8fafc;
-        }
-        .container {
-            background: white;
-            padding: 2rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #2563eb;
-            margin-bottom: 1rem;
-        }
-        .endpoints {
-            background: #f1f5f9;
-            padding: 1rem;
-            border-radius: 6px;
-            margin-top: 1.5rem;
-        }
-        code {
-            background: #e2e8f0;
-            padding: 0.2rem 0.4rem;
-            border-radius: 3px;
-            font-family: 'Monaco', 'Consolas', monospace;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Hello from front-chat! 🎭</h1>
-        <p>Your Theater WebAssembly HTTP server is running successfully!</p>
-        
-        <div class="endpoints">
-            <h3>Available Endpoints:</h3>
-            <ul>
-                <li><code>GET /</code> - This welcome page</li>
-                <li><code>GET /health</code> - Health check (JSON)</li>
-            </ul>
-        </div>
-        
-        <p style="margin-top: 1.5rem; color: #64748b;">
-            Built with Theater WebAssembly actors • 
-            <a href="https://github.com/colinrozzi/theater" style="color: #2563eb;">Learn more</a>
-        </p>
-    </div>
-</body>
-</html>"#;
-
+fn generate_chat_interface() -> HttpResponse {
+    let html_content = include_str!("../chat.html");
+    
     HttpResponse {
         status: 200,
         headers: vec![(
@@ -222,7 +407,7 @@ fn generate_welcome_response() -> HttpResponse {
 }
 
 fn generate_health_response() -> HttpResponse {
-    let json_body = r#"{"status":"ok","service":"front-chat","message":"HTTP server is running"}"#;
+    let json_body = r#"{"status":"ok","service":"front-chat","message":"Chat server is running"}"#;
     
     HttpResponse {
         status: 200,
@@ -263,7 +448,7 @@ fn generate_404_response() -> HttpResponse {
     <div class="container">
         <h1>404 - Not Found</h1>
         <p>The requested page could not be found.</p>
-        <a href="/">← Back to Home</a>
+        <a href="/">← Back to Chat</a>
     </div>
 </body>
 </html>"#;
