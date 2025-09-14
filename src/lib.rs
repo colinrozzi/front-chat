@@ -3,14 +3,15 @@ mod bindings;
 
 use bindings::exports::theater::simple::actor::Guest;
 use bindings::exports::theater::simple::http_handlers::Guest as HttpHandlersGuest;
+use bindings::exports::theater::simple::message_server_client::Guest as MessageServerClientGuest;
+use bindings::theater::simple::types::{ChannelAccept, ChannelId};
 use bindings::theater::simple::http_framework::{self, HandlerId, ServerId};
 use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, ServerConfig};
 use bindings::theater::simple::websocket_types::{MessageType, WebsocketMessage};
 use bindings::theater::simple::runtime::log;
-// TODO: Add these imports when available in theater-simple
-// use bindings::theater::simple::supervisor::spawn;
-// use bindings::theater::simple::random::generate_uuid;
-// use bindings::theater::simple::message_server_host::send;
+use bindings::theater::simple::supervisor::spawn;
+use bindings::theater::simple::random::generate_uuid;
+use bindings::theater::simple::message_server_host::send;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -77,14 +78,51 @@ struct ChatMessage {
     finished: Option<bool>,
 }
 
-// Chat-state actor message protocol (simplified for demo)
+// Chat-state actor message protocol (matching your chat-state/src/protocol.rs)
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 enum ChatStateRequest {
-    #[serde(rename = "send_message")]
-    SendMessage { content: String },
-    #[serde(rename = "get_conversation")]
-    GetConversation,
+    #[serde(rename = "add_message")]
+    AddMessage { message: ChatStateMessage },
+    #[serde(rename = "generate_completion")]
+    GenerateCompletion,
+    #[serde(rename = "get_history")]
+    GetHistory,
+    #[serde(rename = "get_settings")]
+    GetSettings,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+enum ChatStateResponse {
+    #[serde(rename = "success")]
+    Success,
+    #[serde(rename = "chat_message")]
+    ChatMessage { message: ChatStateMessage },
+    #[serde(rename = "history")]
+    History { messages: Vec<ChatStateMessage> },
+    #[serde(rename = "error")]
+    Error { error: ErrorInfo },
+}
+
+// Simple message format for chat-state communication
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ChatStateMessage {
+    pub role: String, // "user" or "assistant" 
+    pub content: Vec<MessageContent>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+enum MessageContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ErrorInfo {
+    pub code: String,
+    pub message: String,
 }
 
 // --- State Management ---
@@ -137,8 +175,8 @@ impl Guest for Component {
         let (actor_id,) = params;
         log(&format!("front-chat actor {} initializing", actor_id));
 
-        // Generate conversation ID (simple UUID for now)
-        let conversation_id = format!("conv_{}", actor_id);
+        // Generate conversation ID
+        let conversation_id = generate_uuid().map_err(|e| format!("Failed to generate conversation ID: {}", e))?;
         
         // Create HTTP server configuration
         let config = ServerConfig {
@@ -169,9 +207,38 @@ impl Guest for Component {
             None,          // disconnect handler (optional)
         ).map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
 
-        // TODO: Spawn chat-state actor
-        // For now, we'll simulate it
-        let chat_state_id = None; // Will implement actor spawning next
+        // Spawn chat-state actor
+        log("Spawning chat-state actor...");
+        let chat_state_manifest = "/Users/colinrozzi/work/actor-registry/chat-state/manifest.toml";
+        
+        // Create init data for chat-state
+        let init_data = serde_json::json!({
+            "conversation_id": conversation_id,
+            "config": {
+                "model_proxy": {
+                    "manifest_path": "https://github.com/colinrozzi/google-proxy/releases/latest/download/manifest.toml",
+                    "model": "gemini-1.5-flash"
+                },
+                "temperature": 0.7,
+                "max_tokens": 2048,
+                "title": "New Conversation"
+            }
+        });
+        
+        let init_bytes = serde_json::to_vec(&init_data)
+            .map_err(|e| format!("Failed to serialize chat-state init data: {}", e))?;
+            
+        let chat_state_id = match spawn(chat_state_manifest, Some(&init_bytes)) {
+            Ok(id) => {
+                log(&format!("Successfully spawned chat-state actor: {}", id));
+                Some(id)
+            }
+            Err(e) => {
+                log(&format!("Failed to spawn chat-state actor: {}", e));
+                // Continue without chat-state for now
+                None
+            }
+        };
 
         // Start the server
         http_framework::start_server(server_id).map_err(|e| e.to_string())?;
@@ -331,39 +398,76 @@ fn handle_client_request(
         ClientRequest::SendMessage { content } => {
             log(&format!("Processing send_message: {}", content));
             
-            // Create user message
+            // Create user message for display
             let user_message = ChatMessage {
-                id: format!("msg_user_{}", content.len()), // Simple ID for now
+                id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
                 role: "user".to_string(),
                 content: content.clone(),
                 timestamp: 0, // TODO: Get actual timestamp
                 finished: Some(true),
             };
             
-            // Broadcast user message
+            // Broadcast user message immediately
             let user_response = ServerResponse::MessageAdded {
                 message: user_message,
             };
+            let mut response_messages = broadcast_to_connections(state, &user_response)?;
             
-            // TODO: Send request to chat-state actor
-            // For now, simulate an assistant response
-            let assistant_message = ChatMessage {
-                id: format!("msg_assistant_{}", content.len()), // Simple ID for now
-                role: "assistant".to_string(),
-                content: format!("Echo: {}", content),
-                timestamp: 0, // TODO: Get actual timestamp
-                finished: Some(true),
-            };
+            // Send to chat-state actor if available
+            if let Some(chat_state_id) = &state.chat_state_id {
+                log(&format!("Sending message to chat-state actor: {}", chat_state_id));
+                
+                // Create chat-state message format
+                let chat_state_message = ChatStateMessage {
+                    role: "user".to_string(),
+                    content: vec![MessageContent::Text { text: content }],
+                };
+                
+                // Send add_message request
+                let add_message_request = ChatStateRequest::AddMessage {
+                    message: chat_state_message,
+                };
+                
+                let request_json = serde_json::to_string(&add_message_request)
+                    .map_err(|e| format!("Failed to serialize chat-state request: {}", e))?;
+                
+                // Send message to chat-state actor
+                if let Err(e) = send(&chat_state_id, request_json.as_bytes()) {
+                    log(&format!("Failed to send add_message to chat-state: {}", e));
+                } else {
+                    log("Successfully sent add_message to chat-state");
+                    
+                    // Now request completion
+                    let completion_request = ChatStateRequest::GenerateCompletion;
+                    let completion_json = serde_json::to_string(&completion_request)
+                        .map_err(|e| format!("Failed to serialize completion request: {}", e))?;
+                    
+                    if let Err(e) = send(&chat_state_id, completion_json.as_bytes()) {
+                        log(&format!("Failed to send generate_completion to chat-state: {}", e));
+                    } else {
+                        log("Successfully sent generate_completion to chat-state");
+                    }
+                }
+            } else {
+                log("No chat-state actor available, creating fallback response");
+                
+                // Fallback: create a simple response
+                let assistant_message = ChatMessage {
+                    id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
+                    role: "assistant".to_string(),
+                    content: "Chat-state actor not available. Please try again.".to_string(),
+                    timestamp: 0,
+                    finished: Some(true),
+                };
+                
+                let assistant_response = ServerResponse::MessageAdded {
+                    message: assistant_message,
+                };
+                
+                response_messages.extend(broadcast_to_connections(state, &assistant_response)?);
+            }
             
-            let assistant_response = ServerResponse::MessageAdded {
-                message: assistant_message,
-            };
-            
-            // Create response messages
-            let mut messages = broadcast_to_connections(state, &user_response)?;
-            messages.extend(broadcast_to_connections(state, &assistant_response)?);
-            
-            Ok(messages)
+            Ok(response_messages)
         }
         ClientRequest::GetConversation => {
             log("Processing get_conversation");
@@ -460,6 +564,147 @@ fn generate_404_response() -> HttpResponse {
             "text/html; charset=utf-8".to_string(),
         )],
         body: Some(html_content.as_bytes().to_vec()),
+    }
+}
+
+impl MessageServerClientGuest for Component {
+    fn handle_send(
+        state_bytes: Option<Vec<u8>>,
+        params: (Vec<u8>,),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        let (message_bytes,) = params;
+        
+        if let Ok(message_str) = String::from_utf8(message_bytes) {
+            log(&format!("Received send message: {}", message_str));
+            
+            let mut state = get_state(&state_bytes)?;
+            
+            // Parse the message from chat-state
+            match serde_json::from_str::<ChatStateResponse>(&message_str) {
+                Ok(response) => {
+                    match handle_chat_state_response(&mut state, response) {
+                        Ok(_) => log("Successfully handled chat-state response"),
+                        Err(e) => log(&format!("Error handling chat-state response: {}", e)),
+                    }
+                }
+                Err(e) => {
+                    log(&format!("Failed to parse chat-state response: {}", e));
+                }
+            }
+            
+            Ok((Some(set_state(&state)),))
+        } else {
+            log("Received non-UTF8 message");
+            Ok((state_bytes,))
+        }
+    }
+    
+    fn handle_request(
+        state: Option<Vec<u8>>,
+        _params: (String, Vec<u8>),
+    ) -> Result<(Option<Vec<u8>>, (Option<Vec<u8>>,)), String> {
+        // Not used for our chat implementation
+        Ok((state, (None,)))
+    }
+    
+    fn handle_channel_open(
+        state: Option<Vec<u8>>,
+        _params: (String, Vec<u8>),
+    ) -> Result<(Option<Vec<u8>>, (ChannelAccept,)), String> {
+        // Not used for our chat implementation
+        Ok((state, (ChannelAccept { accepted: true, message: None },)))
+    }
+    
+    fn handle_channel_message(
+        state: Option<Vec<u8>>,
+        _params: (ChannelId, Vec<u8>),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        // TODO: Implement channel message handling for real-time updates
+        Ok((state,))
+    }
+    
+    fn handle_channel_close(
+        state: Option<Vec<u8>>,
+        _params: (ChannelId,),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        // Not used for our chat implementation
+        Ok((state,))
+    }
+}
+
+// Handle responses from chat-state actor
+fn handle_chat_state_response(
+    state: &mut FrontChatState,
+    response: ChatStateResponse,
+) -> Result<(), String> {
+    match response {
+        ChatStateResponse::ChatMessage { message } => {
+            log(&format!("Received chat message from chat-state: {:?}", message));
+            
+            // Convert chat-state message to our display format
+            let display_message = ChatMessage {
+                id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
+                role: message.role,
+                content: message.content.into_iter()
+                    .filter_map(|c| match c {
+                        MessageContent::Text { text } => Some(text),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                timestamp: 0, // TODO: Get actual timestamp
+                finished: Some(true),
+            };
+            
+            // Broadcast to all WebSocket connections
+            let server_response = ServerResponse::MessageAdded {
+                message: display_message,
+            };
+            
+            // Send to all active connections
+            for connection_id in state.active_connections.keys() {
+                if let Ok(ws_message) = create_websocket_message(&server_response) {
+                    if let Err(e) = http_framework::send_websocket_message(
+                        state.server_id, 
+                        *connection_id, 
+                        &ws_message
+                    ) {
+                        log(&format!("Failed to send WebSocket message to connection {}: {}", connection_id, e));
+                    }
+                }
+            }
+            
+            Ok(())
+        }
+        ChatStateResponse::Success => {
+            log("Received success response from chat-state");
+            Ok(())
+        }
+        ChatStateResponse::Error { error } => {
+            log(&format!("Received error from chat-state: {} - {}", error.code, error.message));
+            
+            // Send error to WebSocket clients
+            let error_response = ServerResponse::Error {
+                message: format!("Chat error: {}", error.message),
+            };
+            
+            for connection_id in state.active_connections.keys() {
+                if let Ok(ws_message) = create_websocket_message(&error_response) {
+                    if let Err(e) = http_framework::send_websocket_message(
+                        state.server_id, 
+                        *connection_id, 
+                        &ws_message
+                    ) {
+                        log(&format!("Failed to send error to connection {}: {}", connection_id, e));
+                    }
+                }
+            }
+            
+            Ok(())
+        }
+        ChatStateResponse::History { messages: _ } => {
+            log("Received history response from chat-state (not implemented yet)");
+            Ok(())
+        }
     }
 }
 
