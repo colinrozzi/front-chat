@@ -1,6 +1,6 @@
-# front-chat
+# Front Chat Actor
 
-A basic HTTP server built with [Theater](https://github.com/colinrozzi/theater) WebAssembly actors.
+A WebSocket-enabled chat interface built with [Theater](https://github.com/colinrozzi/theater) WebAssembly actors. This actor provides a real-time chat interface that communicates with chat-state actors via the Theater message system.
 
 ## 🚀 Quick Start
 
@@ -10,106 +10,171 @@ A basic HTTP server built with [Theater](https://github.com/colinrozzi/theater) 
 - [Theater CLI](https://github.com/colinrozzi/theater) installed
 - `cargo component` installed (`cargo install cargo-component`)
 
-### Running the Server
+### Building the Component
 
 ```bash
 # Build the WebAssembly component
 cargo component build --release
+```
 
+### Running the Chat Server
+
+```bash
 # Start the server
 theater start manifest.toml
 ```
 
 The server will start on **http://localhost:8080**
 
-### Available Endpoints
+## 🎭 Architecture
 
-- `GET /` - Welcome page with server information
+This front-chat actor implements a **one-actor-per-conversation** model that mirrors the chat-state architecture:
+
+```
+Browser (WebSocket) ↔ front-chat ↔ chat-state
+                            ↑         ↓
+                      Actor Messages  Channel Updates
+```
+
+### Core Features
+
+- **WebSocket Real-time Communication**: Bidirectional real-time messaging
+- **Modern Chat Interface**: Clean, responsive web interface
+- **Actor Message Integration**: Direct communication with chat-state actors
+- **Channel Subscriptions**: Real-time updates via Theater's channel system
+- **Connection Management**: Automatic reconnection and error handling
+
+## 🌐 Endpoints
+
+### HTTP Endpoints
+- `GET /` - Chat interface (HTML + WebSocket client)
 - `GET /health` - JSON health check response
+
+### WebSocket Endpoint
+- `WS /ws` - Real-time chat communication
+
+## 📨 WebSocket Protocol
+
+### Client → Server Messages
+
+```javascript
+// Send a message
+{
+  "type": "send_message",
+  "content": "Hello, world!"
+}
+
+// Get conversation history
+{
+  "type": "get_conversation"
+}
+
+// Update settings
+{
+  "type": "update_settings",
+  "settings": {
+    "temperature": 0.7,
+    "model": "claude-3-5-sonnet"
+  }
+}
+```
+
+### Server → Client Messages
+
+```javascript
+// Connection established
+{
+  "type": "connected",
+  "conversation_id": "conv_abc123"
+}
+
+// New message added
+{
+  "type": "message_added",
+  "message": {
+    "id": "msg_123",
+    "role": "assistant",
+    "content": "Hello back!",
+    "timestamp": 1694723405,
+    "finished": true
+  }
+}
+
+// Conversation state
+{
+  "type": "conversation_state", 
+  "messages": [...],
+  "conversation_id": "conv_abc123"
+}
+
+// Error occurred
+{
+  "type": "error",
+  "message": "Something went wrong"
+}
+```
 
 ## 🏗️ Project Structure
 
 ```
 front-chat/
 ├── src/
-│   └── lib.rs              # HTTP server implementation
-├── wit/
-│   ├── world.wit          # WebAssembly Interface Types definitions
-│   └── deps/              # Theater framework dependencies
-├── Cargo.toml             # Rust dependencies
-├── manifest.toml          # Theater actor configuration
+│   ├── lib.rs             # Main actor implementation
+│   └── bindings.rs        # Generated WIT bindings
+├── wit/                   # WebAssembly Interface Types
+├── chat.html             # Chat interface HTML/CSS/JS
+├── Cargo.toml            # Rust dependencies
+├── manifest.toml         # Theater actor configuration
 └── README.md             # This file
 ```
 
+## 🎨 Chat Interface Features
+
+- **Real-time Messaging**: Instant message delivery via WebSocket
+- **Typing Indicators**: Shows when AI is processing
+- **Auto-scroll**: Automatically scrolls to new messages
+- **Connection Status**: Visual connection state indicator
+- **Responsive Design**: Works on desktop and mobile
+- **Error Handling**: Graceful error display and recovery
+- **Auto-reconnect**: Automatically reconnects on disconnect
+
 ## 🔧 Development
 
-### Adding New Routes
+### Chat-State Integration
 
-To add new endpoints, modify the `handle_request` function in `src/lib.rs`:
+Currently implemented with a simple echo response. To integrate with actual chat-state actors:
 
-```rust
-let response = match (request.method.as_str(), request.uri.as_str()) {
-    ("GET", "/") => generate_welcome_response(),
-    ("GET", "/health") => generate_health_response(),
-    ("GET", "/api/users") => generate_users_response(),  // Add new route
-    _ => generate_404_response(),
-};
-```
+1. **Actor Spawning**: Uncomment supervisor spawn functionality
+2. **Message Passing**: Implement ChatStateRequest message sending
+3. **Channel Subscription**: Subscribe to chat-state update channels
+4. **Real-time Updates**: Forward channel updates to WebSocket clients
 
-Then implement your response function:
+### Current Status
 
-```rust
-fn generate_users_response() -> HttpResponse {
-    let json_body = r#"{"users":["alice","bob"]}"#;
-    HttpResponse {
-        status: 200,
-        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
-        body: Some(json_body.as_bytes().to_vec()),
-    }
-}
-```
+- ✅ WebSocket server implementation
+- ✅ Modern chat interface
+- ✅ Message protocol definition  
+- ✅ Connection management
+- ✅ Error handling
+- 🔄 Chat-state actor integration (in progress)
+- 🔄 Channel subscription system (in progress)
 
-### Building and Testing
+### Next Steps
 
-```bash
-# Build the component
-cargo component build --release
+1. **Actor Communication**: Integrate with chat-state message system
+2. **Channel Subscriptions**: Listen for real-time chat-state updates  
+3. **Settings Management**: Implement conversation settings UI
+4. **Message History**: Load and display conversation history
+5. **Streaming Responses**: Support for streaming AI completions
 
-# Start the server
-theater start manifest.toml
+## 🚀 Deployment
 
-# Test the endpoints
-curl http://localhost:8080/
-curl http://localhost:8080/health
-```
+The component generates optimized WASM files:
 
-### Monitoring the Actor
+- **Debug**: `target/wasm32-wasip1/debug/front_chat.wasm`
+- **Release**: `target/wasm32-wasip1/release/front_chat.wasm`
 
-```bash
-# List running actors
-theater list
-
-# Inspect the actor (get the actor ID from theater list)
-theater inspect <actor-id>
-
-# View actor events
-theater events <actor-id>
-
-# Stop the actor
-theater stop <actor-id>
-```
-
-## 🎯 Next Steps
-
-This template provides a foundation for building HTTP APIs and web applications. Consider adding:
-
-- **Database integration** - Connect to databases using Theater's capabilities
-- **Authentication** - Add middleware for API authentication
-- **WebSocket support** - Enable real-time features
-- **File serving** - Serve static files using Theater's filesystem handlers
-- **Request validation** - Add input validation and error handling
-- **Logging** - Enhanced request/response logging
-- **CORS** - Cross-origin resource sharing support
+Deploy using Theater's actor system for scalable, distributed chat interfaces.
 
 ## 📚 Learn More
 
@@ -117,10 +182,6 @@ This template provides a foundation for building HTTP APIs and web applications.
 - [WebAssembly Component Model](https://github.com/WebAssembly/component-model)
 - [WIT (WebAssembly Interface Types)](https://github.com/WebAssembly/wit-bindgen)
 
-## 🤝 Contributing
-
-Feel free to extend this template and share your improvements!
-
 ---
 
-*Built with ❤️ using Theater WebAssembly actors*
+*Built with ❤️ using Theater WebAssembly actors and modern web technologies*
