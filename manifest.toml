@@ -1,0 +1,10 @@
+name = "front-chat"
+version = "0.1.0"
+component = "./target/wasm32-unknown-unknown/release/front_chat.wasm"
+description = "A basic HTTP server built with Theater WebAssembly actors"
+
+[[handler]]
+type = "runtime"
+
+[[handler]]
+type = "http-framework"
