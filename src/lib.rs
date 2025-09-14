@@ -11,7 +11,7 @@ use bindings::theater::simple::websocket_types::{MessageType, WebsocketMessage};
 use bindings::theater::simple::runtime::log;
 use bindings::theater::simple::supervisor::spawn;
 use bindings::theater::simple::random::generate_uuid;
-use bindings::theater::simple::message_server_host::send;
+use bindings::theater::simple::message_server_host::{send, open_channel};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -24,6 +24,7 @@ struct FrontChatState {
     chat_state_id: Option<String>,
     conversation_id: String,
     active_connections: HashMap<u64, ConnectionInfo>,
+    chat_state_channel: Option<String>, // Channel ID for chat-state updates
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -231,6 +232,28 @@ impl Guest for Component {
         let chat_state_id = match spawn(chat_state_manifest, Some(&init_bytes)) {
             Ok(id) => {
                 log(&format!("Successfully spawned chat-state actor: {}", id));
+                
+                // Open a channel with chat-state for real-time updates
+                log("Opening channel with chat-state for real-time updates...");
+                let subscribe_message = serde_json::json!({
+                    "type": "channel_subscribe",
+                    "channel": format!("conversation_{}", conversation_id)
+                });
+                
+                let subscribe_bytes = serde_json::to_vec(&subscribe_message)
+                    .map_err(|e| format!("Failed to serialize subscribe message: {}", e))?;
+                
+                match open_channel(&id, &subscribe_bytes) {
+                    Ok(channel_id) => {
+                        log(&format!("Successfully opened channel with chat-state: {}", channel_id));
+                        // We'll store the channel ID in state later when we can update it
+                    }
+                    Err(e) => {
+                        log(&format!("Failed to open channel with chat-state: {}", e));
+                        // Continue without channel - we'll still get direct message responses
+                    }
+                }
+                
                 Some(id)
             }
             Err(e) => {
@@ -255,6 +278,7 @@ impl Guest for Component {
             chat_state_id,
             conversation_id,
             active_connections: HashMap::new(),
+            chat_state_channel: None, // Will be set when channel is established
         };
         
         Ok((Some(set_state(&initial_state)),))
@@ -609,18 +633,120 @@ impl MessageServerClientGuest for Component {
     
     fn handle_channel_open(
         state: Option<Vec<u8>>,
-        _params: (String, Vec<u8>),
+        params: (String, Vec<u8>),
     ) -> Result<(Option<Vec<u8>>, (ChannelAccept,)), String> {
-        // Not used for our chat implementation
-        Ok((state, (ChannelAccept { accepted: true, message: None },)))
+        let (from_actor_id, initial_message) = params;
+        
+        log(&format!("Channel open request from actor: {}", from_actor_id));
+        
+        let mut state = get_state(&state)?;
+        
+        // Check if this is from our chat-state actor
+        let should_accept = match &state.chat_state_id {
+            Some(chat_state_id) => {
+                if from_actor_id == *chat_state_id {
+                    log("Accepting channel from our chat-state actor");
+                    true
+                } else {
+                    log(&format!("Rejecting channel from unknown actor: {}", from_actor_id));
+                    false
+                }
+            }
+            None => {
+                log("Rejecting channel - no chat-state actor spawned");
+                false
+            }
+        };
+        
+        if should_accept {
+            // Parse initial message if available
+            if !initial_message.is_empty() {
+                if let Ok(msg_str) = String::from_utf8(initial_message) {
+                    log(&format!("Channel initial message: {}", msg_str));
+                }
+            }
+            
+            // Send confirmation message
+            let response_message = serde_json::json!({
+                "type": "channel_accepted",
+                "message": "Channel established for real-time updates"
+            });
+            
+            let response_bytes = serde_json::to_vec(&response_message).unwrap_or_default();
+            
+            Ok((Some(set_state(&state)), (ChannelAccept { 
+                accepted: true, 
+                message: Some(response_bytes) 
+            },)))
+        } else {
+            Ok((Some(set_state(&state)), (ChannelAccept { 
+                accepted: false, 
+                message: None 
+            },)))
+        }
     }
     
     fn handle_channel_message(
         state: Option<Vec<u8>>,
-        _params: (ChannelId, Vec<u8>),
+        params: (ChannelId, Vec<u8>),
     ) -> Result<(Option<Vec<u8>>,), String> {
-        // TODO: Implement channel message handling for real-time updates
-        Ok((state,))
+        let (channel_id, message_bytes) = params;
+        
+        log(&format!("Received channel message on {}", channel_id));
+        
+        let mut state = get_state(&state)?;
+        
+        // Parse the channel message
+        if let Ok(message_str) = String::from_utf8(message_bytes) {
+            log(&format!("Channel message content: {}", message_str));
+            
+            // Try to parse as a chat-state response
+            match serde_json::from_str::<ChatStateResponse>(&message_str) {
+                Ok(response) => {
+                    log("Received chat-state response via channel");
+                    match handle_chat_state_response(&mut state, response) {
+                        Ok(_) => log("Successfully handled channel chat-state response"),
+                        Err(e) => log(&format!("Error handling channel chat-state response: {}", e)),
+                    }
+                }
+                Err(e) => {
+                    log(&format!("Channel message is not a chat-state response: {}", e));
+                    
+                    // Try to parse as a generic update message
+                    if let Ok(update) = serde_json::from_str::<serde_json::Value>(&message_str) {
+                        log(&format!("Received channel update: {:?}", update));
+                        
+                        // Forward channel updates to WebSocket clients
+                        let server_response = ServerResponse::MessageUpdate {
+                            message: ChatMessage {
+                                id: generate_uuid().unwrap_or_else(|_| "update".to_string()),
+                                role: "system".to_string(),
+                                content: format!("Update: {}", update),
+                                timestamp: 0,
+                                finished: Some(true),
+                            },
+                        };
+                        
+                        // Broadcast to all active connections
+                        for connection_id in state.active_connections.keys() {
+                            if let Ok(ws_message) = create_websocket_message(&server_response) {
+                                if let Err(e) = http_framework::send_websocket_message(
+                                    state.server_id, 
+                                    *connection_id, 
+                                    &ws_message
+                                ) {
+                                    log(&format!("Failed to send channel update to connection {}: {}", connection_id, e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            log("Received non-UTF8 channel message");
+        }
+        
+        Ok((Some(set_state(&state)),))
     }
     
     fn handle_channel_close(
