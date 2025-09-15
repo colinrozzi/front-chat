@@ -14,6 +14,9 @@ type = "supervisor"
 
 [[handler]]
 type = "random"
+max_bytes = 1048576
+max_int = 9223372036854775807
+allow_crypto_secure = false
 
 [[handler]]
 type = "message-server"
