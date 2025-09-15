@@ -4,6 +4,7 @@ mod bindings;
 use bindings::exports::theater::simple::actor::Guest;
 use bindings::exports::theater::simple::http_handlers::Guest as HttpHandlersGuest;
 use bindings::exports::theater::simple::message_server_client::Guest as MessageServerClientGuest;
+use bindings::exports::theater::simple::supervisor_handlers::Guest as SupervisorHandlersGuest;
 use bindings::theater::simple::types::{ChannelAccept, ChannelId};
 use bindings::theater::simple::http_framework::{self, HandlerId, ServerId};
 use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, ServerConfig};
@@ -332,8 +333,8 @@ impl HttpHandlersGuest for Component {
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (_handler_id, connection_id, _path, _protocol) = params;
         
-        let mut state = get_state(&state)?;
         
+        let mut state = get_state(&state)?;
         log(&format!("WebSocket connection {} established", connection_id));
         
         // Add connection to active connections
@@ -639,8 +640,8 @@ impl MessageServerClientGuest for Component {
         
         log(&format!("Channel open request from actor: {}", from_actor_id));
         
-        let mut state = get_state(&state)?;
         
+        let state = get_state(&state)?;
         // Check if this is from our chat-state actor
         let should_accept = match &state.chat_state_id {
             Some(chat_state_id) => {
@@ -831,6 +832,52 @@ fn handle_chat_state_response(
             log("Received history response from chat-state (not implemented yet)");
             Ok(())
         }
+    }
+}
+
+// Supervisor handlers implementation
+impl SupervisorHandlersGuest for Component {
+    fn handle_child_error(
+        state: Option<Vec<u8>>,
+        params: (String, bindings::theater::simple::types::WitActorError),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        let (actor_id, error) = params;
+        log(&format!(
+            "Child actor {} encountered error: {:?}",
+            actor_id, error
+        ));
+        
+        // Handle the error - could restart child, notify user, etc.
+        // For now, just log it and return the same state
+        Ok((state,))
+    }
+
+    fn handle_child_exit(
+        state: Option<Vec<u8>>,
+        params: (String, Option<Vec<u8>>),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        let (actor_id, _exit_state) = params;
+        log(&format!(
+            "Child actor {} exited",
+            actor_id
+        ));
+        
+        // Handle child exit - cleanup, restart if needed, etc.
+        Ok((state,))
+    }
+
+    fn handle_child_external_stop(
+        state: Option<Vec<u8>>,
+        params: (String,),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        let (actor_id,) = params;
+        log(&format!(
+            "Child actor {} externally stopped",
+            actor_id
+        ));
+        
+        // Handle external stop
+        Ok((state,))
     }
 }
 
