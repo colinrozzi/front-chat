@@ -5,14 +5,14 @@ use bindings::exports::theater::simple::actor::Guest;
 use bindings::exports::theater::simple::http_handlers::Guest as HttpHandlersGuest;
 use bindings::exports::theater::simple::message_server_client::Guest as MessageServerClientGuest;
 use bindings::exports::theater::simple::supervisor_handlers::Guest as SupervisorHandlersGuest;
-use bindings::theater::simple::types::{ChannelAccept, ChannelId};
 use bindings::theater::simple::http_framework::{self, HandlerId, ServerId};
 use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, ServerConfig};
-use bindings::theater::simple::websocket_types::{MessageType, WebsocketMessage};
+use bindings::theater::simple::message_server_host::{open_channel, send};
+use bindings::theater::simple::random::generate_uuid;
 use bindings::theater::simple::runtime::log;
 use bindings::theater::simple::supervisor::spawn;
-use bindings::theater::simple::random::generate_uuid;
-use bindings::theater::simple::message_server_host::{send, open_channel};
+use bindings::theater::simple::types::{ChannelAccept, ChannelId};
+use bindings::theater::simple::websocket_types::{MessageType, WebsocketMessage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -61,7 +61,7 @@ enum ServerResponse {
     #[serde(rename = "message_update")]
     MessageUpdate { message: ChatMessage },
     #[serde(rename = "conversation_state")]
-    ConversationState { 
+    ConversationState {
         messages: Vec<ChatMessage>,
         conversation_id: String,
     },
@@ -110,7 +110,7 @@ enum ChatStateResponse {
 // Simple message format for chat-state communication
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct ChatStateMessage {
-    pub role: String, // "user" or "assistant" 
+    pub role: String, // "user" or "assistant"
     pub content: Vec<MessageContent>,
 }
 
@@ -147,7 +147,7 @@ fn set_state(state: &FrontChatState) -> Vec<u8> {
 fn create_websocket_message(response: &ServerResponse) -> Result<WebsocketMessage, String> {
     let json_text = serde_json::to_string(response)
         .map_err(|e| format!("Failed to serialize response: {}", e))?;
-    
+
     Ok(WebsocketMessage {
         ty: MessageType::Text,
         text: Some(json_text),
@@ -156,15 +156,15 @@ fn create_websocket_message(response: &ServerResponse) -> Result<WebsocketMessag
 }
 
 fn broadcast_to_connections(
-    state: &FrontChatState, 
-    response: &ServerResponse
+    state: &FrontChatState,
+    response: &ServerResponse,
 ) -> Result<Vec<WebsocketMessage>, String> {
     if state.active_connections.is_empty() {
         return Ok(vec![]);
     }
 
     let ws_message = create_websocket_message(response)?;
-    
+
     // For now, we'll return one message per connection
     // The WebSocket framework will handle the actual broadcasting
     Ok(vec![ws_message])
@@ -178,8 +178,9 @@ impl Guest for Component {
         log(&format!("front-chat actor {} initializing", actor_id));
 
         // Generate conversation ID
-        let conversation_id = generate_uuid().map_err(|e| format!("Failed to generate conversation ID: {}", e))?;
-        
+        let conversation_id =
+            generate_uuid().map_err(|e| format!("Failed to generate conversation ID: {}", e))?;
+
         // Create HTTP server configuration
         let config = ServerConfig {
             port: Some(8080),
@@ -191,8 +192,10 @@ impl Guest for Component {
         let server_id = http_framework::create_server(&config).map_err(|e| e.to_string())?;
 
         // Register handlers
-        let static_handler = http_framework::register_handler("static").map_err(|e| e.to_string())?;
-        let ws_handler = http_framework::register_handler("websocket").map_err(|e| e.to_string())?;
+        let static_handler =
+            http_framework::register_handler("static").map_err(|e| e.to_string())?;
+        let ws_handler =
+            http_framework::register_handler("websocket").map_err(|e| e.to_string())?;
 
         // Set up HTTP routes
         http_framework::add_route(server_id, "/", "GET", static_handler)
@@ -202,17 +205,16 @@ impl Guest for Component {
 
         // Enable WebSocket
         http_framework::enable_websocket(
-            server_id,
-            "/ws",
-            None,          // connect handler (optional)
-            ws_handler,    // message handler (required)
-            None,          // disconnect handler (optional)
-        ).map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
+            server_id, "/ws", None,       // connect handler (optional)
+            ws_handler, // message handler (required)
+            None,       // disconnect handler (optional)
+        )
+        .map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
 
         // Spawn chat-state actor
         log("Spawning chat-state actor...");
         let chat_state_manifest = "/Users/colinrozzi/work/actor-registry/chat-state/manifest.toml";
-        
+
         // Create init data for chat-state
         let init_data = serde_json::json!({
             "conversation_id": conversation_id,
@@ -226,27 +228,30 @@ impl Guest for Component {
                 "title": "New Conversation"
             }
         });
-        
+
         let init_bytes = serde_json::to_vec(&init_data)
             .map_err(|e| format!("Failed to serialize chat-state init data: {}", e))?;
-            
+
         let chat_state_id = match spawn(chat_state_manifest, Some(&init_bytes)) {
             Ok(id) => {
                 log(&format!("Successfully spawned chat-state actor: {}", id));
-                
+
                 // Open a channel with chat-state for real-time updates
                 log("Opening channel with chat-state for real-time updates...");
                 let subscribe_message = serde_json::json!({
                     "type": "channel_subscribe",
                     "channel": format!("conversation_{}", conversation_id)
                 });
-                
+
                 let subscribe_bytes = serde_json::to_vec(&subscribe_message)
                     .map_err(|e| format!("Failed to serialize subscribe message: {}", e))?;
-                
+
                 match open_channel(&id, &subscribe_bytes) {
                     Ok(channel_id) => {
-                        log(&format!("Successfully opened channel with chat-state: {}", channel_id));
+                        log(&format!(
+                            "Successfully opened channel with chat-state: {}",
+                            channel_id
+                        ));
                         // We'll store the channel ID in state later when we can update it
                     }
                     Err(e) => {
@@ -254,7 +259,7 @@ impl Guest for Component {
                         // Continue without channel - we'll still get direct message responses
                     }
                 }
-                
+
                 Some(id)
             }
             Err(e) => {
@@ -266,8 +271,11 @@ impl Guest for Component {
 
         // Start the server
         http_framework::start_server(server_id).map_err(|e| e.to_string())?;
-        
-        log(&format!("front-chat server started on port 8080 for conversation {}", conversation_id));
+
+        log(&format!(
+            "front-chat server started on port 8080 for conversation {}",
+            conversation_id
+        ));
         log("Available endpoints:");
         log("  GET / - Chat interface");
         log("  GET /health - Health check");
@@ -281,7 +289,7 @@ impl Guest for Component {
             active_connections: HashMap::new(),
             chat_state_channel: None, // Will be set when channel is established
         };
-        
+
         Ok((Some(set_state(&initial_state)),))
     }
 }
@@ -292,7 +300,7 @@ impl HttpHandlersGuest for Component {
         params: (HandlerId, HttpRequest),
     ) -> Result<(Option<Vec<u8>>, (HttpResponse,)), String> {
         let (_handler_id, request) = params;
-        
+
         log(&format!(
             "Handling {} request to {}",
             request.method, request.uri
@@ -318,12 +326,12 @@ impl HttpHandlersGuest for Component {
         String,
     > {
         let (_, request) = params;
-        
+
         let middleware_result = bindings::theater::simple::http_types::MiddlewareResult {
             proceed: true,
             request,
         };
-        
+
         Ok((state, (middleware_result,)))
     }
 
@@ -332,24 +340,31 @@ impl HttpHandlersGuest for Component {
         params: (HandlerId, u64, String, Option<String>),
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (_handler_id, connection_id, _path, _protocol) = params;
-        
-        
+
         let mut state = get_state(&state)?;
-        log(&format!("WebSocket connection {} established", connection_id));
-        
+        log(&format!(
+            "WebSocket connection {} established",
+            connection_id
+        ));
+
         // Add connection to active connections
-        state.active_connections.insert(connection_id, ConnectionInfo {
-            connected_at: 0, // TODO: Get actual timestamp
-        });
+        state.active_connections.insert(
+            connection_id,
+            ConnectionInfo {
+                connected_at: 0, // TODO: Get actual timestamp
+            },
+        );
 
         // Send welcome message
         let welcome_response = ServerResponse::Connected {
             conversation_id: state.conversation_id.clone(),
         };
-        
+
         if let Ok(ws_message) = create_websocket_message(&welcome_response) {
             // Send welcome message to this specific connection
-            if let Err(e) = http_framework::send_websocket_message(state.server_id, connection_id, &ws_message) {
+            if let Err(e) =
+                http_framework::send_websocket_message(state.server_id, connection_id, &ws_message)
+            {
                 log(&format!("Failed to send welcome message: {}", e));
             }
         }
@@ -362,14 +377,17 @@ impl HttpHandlersGuest for Component {
         params: (HandlerId, u64, WebsocketMessage),
     ) -> Result<(Option<Vec<u8>>, (Vec<WebsocketMessage>,)), String> {
         let (_handler_id, connection_id, message) = params;
-        
+
         let mut state = get_state(&state)?;
-        
+
         match message.ty {
             MessageType::Text => {
                 if let Some(text) = message.text {
-                    log(&format!("Received WebSocket message from {}: {}", connection_id, text));
-                    
+                    log(&format!(
+                        "Received WebSocket message from {}: {}",
+                        connection_id, text
+                    ));
+
                     // Parse client request
                     match serde_json::from_str::<ClientRequest>(&text) {
                         Ok(request) => {
@@ -401,11 +419,14 @@ impl HttpHandlersGuest for Component {
         params: (HandlerId, u64),
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (_handler_id, connection_id) = params;
-        
+
         let mut state = get_state(&state)?;
-        
-        log(&format!("WebSocket connection {} disconnected", connection_id));
-        
+
+        log(&format!(
+            "WebSocket connection {} disconnected",
+            connection_id
+        ));
+
         // Remove connection from active connections
         state.active_connections.remove(&connection_id);
 
@@ -422,7 +443,7 @@ fn handle_client_request(
     match request {
         ClientRequest::SendMessage { content } => {
             log(&format!("Processing send_message: {}", content));
-            
+
             // Create user message for display
             let user_message = ChatMessage {
                 id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
@@ -431,90 +452,99 @@ fn handle_client_request(
                 timestamp: 0, // TODO: Get actual timestamp
                 finished: Some(true),
             };
-            
+
             // Broadcast user message immediately
             let user_response = ServerResponse::MessageAdded {
                 message: user_message,
             };
             let mut response_messages = broadcast_to_connections(state, &user_response)?;
-            
+
             // Send to chat-state actor if available
             if let Some(chat_state_id) = &state.chat_state_id {
-                log(&format!("Sending message to chat-state actor: {}", chat_state_id));
-                
+                log(&format!(
+                    "Sending message to chat-state actor: {}",
+                    chat_state_id
+                ));
+
                 // Create chat-state message format
                 let chat_state_message = ChatStateMessage {
                     role: "user".to_string(),
                     content: vec![MessageContent::Text { text: content }],
                 };
-                
+
                 // Send add_message request
                 let add_message_request = ChatStateRequest::AddMessage {
                     message: chat_state_message,
                 };
-                
+
                 let request_json = serde_json::to_string(&add_message_request)
                     .map_err(|e| format!("Failed to serialize chat-state request: {}", e))?;
-                
+
                 // Send message to chat-state actor
                 if let Err(e) = send(&chat_state_id, request_json.as_bytes()) {
                     log(&format!("Failed to send add_message to chat-state: {}", e));
                 } else {
                     log("Successfully sent add_message to chat-state");
-                    
+
                     // Now request completion
                     let completion_request = ChatStateRequest::GenerateCompletion;
                     let completion_json = serde_json::to_string(&completion_request)
                         .map_err(|e| format!("Failed to serialize completion request: {}", e))?;
-                    
+
                     if let Err(e) = send(&chat_state_id, completion_json.as_bytes()) {
-                        log(&format!("Failed to send generate_completion to chat-state: {}", e));
+                        log(&format!(
+                            "Failed to send generate_completion to chat-state: {}",
+                            e
+                        ));
                     } else {
                         log("Successfully sent generate_completion to chat-state");
                     }
                 }
             } else {
                 log("No chat-state actor available, creating fallback response");
-                
+
                 // Fallback: create a simple response
                 let assistant_message = ChatMessage {
-                    id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
+                    id: generate_uuid()
+                        .map_err(|e| format!("Failed to generate message ID: {}", e))?,
                     role: "assistant".to_string(),
                     content: "Chat-state actor not available. Please try again.".to_string(),
                     timestamp: 0,
                     finished: Some(true),
                 };
-                
+
                 let assistant_response = ServerResponse::MessageAdded {
                     message: assistant_message,
                 };
-                
+
                 response_messages.extend(broadcast_to_connections(state, &assistant_response)?);
             }
-            
+
             Ok(response_messages)
         }
         ClientRequest::GetConversation => {
             log("Processing get_conversation");
-            
+
             // TODO: Get actual conversation from chat-state
             // For now, return empty conversation
             let response = ServerResponse::ConversationState {
                 messages: vec![],
                 conversation_id: state.conversation_id.clone(),
             };
-            
+
             broadcast_to_connections(state, &response)
         }
-        ClientRequest::UpdateSettings { settings: _settings } => {
+        ClientRequest::UpdateSettings {
+            settings: _settings,
+        } => {
             log("Processing update_settings");
-            
+
             // TODO: Forward to chat-state actor
             // For now, just acknowledge
             let response = ServerResponse::Error {
                 message: "Settings update not implemented yet".to_string(),
             };
-            
+
             broadcast_to_connections(state, &response)
         }
     }
@@ -524,7 +554,7 @@ fn handle_client_request(
 
 fn generate_chat_interface() -> HttpResponse {
     let html_content = include_str!("../chat.html");
-    
+
     HttpResponse {
         status: 200,
         headers: vec![(
@@ -537,13 +567,10 @@ fn generate_chat_interface() -> HttpResponse {
 
 fn generate_health_response() -> HttpResponse {
     let json_body = r#"{"status":"ok","service":"front-chat","message":"Chat server is running"}"#;
-    
+
     HttpResponse {
         status: 200,
-        headers: vec![(
-            "Content-Type".to_string(),
-            "application/json".to_string(),
-        )],
+        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
         body: Some(json_body.as_bytes().to_vec()),
     }
 }
@@ -598,32 +625,30 @@ impl MessageServerClientGuest for Component {
         params: (Vec<u8>,),
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (message_bytes,) = params;
-        
+
         if let Ok(message_str) = String::from_utf8(message_bytes) {
             log(&format!("Received send message: {}", message_str));
-            
+
             let mut state = get_state(&state_bytes)?;
-            
+
             // Parse the message from chat-state
             match serde_json::from_str::<ChatStateResponse>(&message_str) {
-                Ok(response) => {
-                    match handle_chat_state_response(&mut state, response) {
-                        Ok(_) => log("Successfully handled chat-state response"),
-                        Err(e) => log(&format!("Error handling chat-state response: {}", e)),
-                    }
-                }
+                Ok(response) => match handle_chat_state_response(&mut state, response) {
+                    Ok(_) => log("Successfully handled chat-state response"),
+                    Err(e) => log(&format!("Error handling chat-state response: {}", e)),
+                },
                 Err(e) => {
                     log(&format!("Failed to parse chat-state response: {}", e));
                 }
             }
-            
+
             Ok((Some(set_state(&state)),))
         } else {
             log("Received non-UTF8 message");
             Ok((state_bytes,))
         }
     }
-    
+
     fn handle_request(
         state: Option<Vec<u8>>,
         _params: (String, Vec<u8>),
@@ -631,16 +656,18 @@ impl MessageServerClientGuest for Component {
         // Not used for our chat implementation
         Ok((state, (None,)))
     }
-    
+
     fn handle_channel_open(
         state: Option<Vec<u8>>,
         params: (String, Vec<u8>),
     ) -> Result<(Option<Vec<u8>>, (ChannelAccept,)), String> {
         let (from_actor_id, initial_message) = params;
-        
-        log(&format!("Channel open request from actor: {}", from_actor_id));
-        
-        
+
+        log(&format!(
+            "Channel open request from actor: {}",
+            from_actor_id
+        ));
+
         let state = get_state(&state)?;
         // Check if this is from our chat-state actor
         let should_accept = match &state.chat_state_id {
@@ -649,7 +676,10 @@ impl MessageServerClientGuest for Component {
                     log("Accepting channel from our chat-state actor");
                     true
                 } else {
-                    log(&format!("Rejecting channel from unknown actor: {}", from_actor_id));
+                    log(&format!(
+                        "Rejecting channel from unknown actor: {}",
+                        from_actor_id
+                    ));
                     false
                 }
             }
@@ -658,7 +688,7 @@ impl MessageServerClientGuest for Component {
                 false
             }
         };
-        
+
         if should_accept {
             // Parse initial message if available
             if !initial_message.is_empty() {
@@ -666,57 +696,69 @@ impl MessageServerClientGuest for Component {
                     log(&format!("Channel initial message: {}", msg_str));
                 }
             }
-            
+
             // Send confirmation message
             let response_message = serde_json::json!({
                 "type": "channel_accepted",
                 "message": "Channel established for real-time updates"
             });
-            
+
             let response_bytes = serde_json::to_vec(&response_message).unwrap_or_default();
-            
-            Ok((Some(set_state(&state)), (ChannelAccept { 
-                accepted: true, 
-                message: Some(response_bytes) 
-            },)))
+
+            Ok((
+                Some(set_state(&state)),
+                (ChannelAccept {
+                    accepted: true,
+                    message: Some(response_bytes),
+                },),
+            ))
         } else {
-            Ok((Some(set_state(&state)), (ChannelAccept { 
-                accepted: false, 
-                message: None 
-            },)))
+            Ok((
+                Some(set_state(&state)),
+                (ChannelAccept {
+                    accepted: false,
+                    message: None,
+                },),
+            ))
         }
     }
-    
+
     fn handle_channel_message(
         state: Option<Vec<u8>>,
         params: (ChannelId, Vec<u8>),
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (channel_id, message_bytes) = params;
-        
+
         log(&format!("Received channel message on {}", channel_id));
-        
+
         let mut state = get_state(&state)?;
-        
+
         // Parse the channel message
         if let Ok(message_str) = String::from_utf8(message_bytes) {
             log(&format!("Channel message content: {}", message_str));
-            
+
             // Try to parse as a chat-state response
             match serde_json::from_str::<ChatStateResponse>(&message_str) {
                 Ok(response) => {
                     log("Received chat-state response via channel");
                     match handle_chat_state_response(&mut state, response) {
                         Ok(_) => log("Successfully handled channel chat-state response"),
-                        Err(e) => log(&format!("Error handling channel chat-state response: {}", e)),
+                        Err(e) => log(&format!(
+                            "Error handling channel chat-state response: {}",
+                            e
+                        )),
                     }
                 }
                 Err(e) => {
-                    log(&format!("Channel message is not a chat-state response: {}", e));
-                    
+                    log(&format!(
+                        "Channel message is not a chat-state response: {}",
+                        e
+                    ));
+
                     // Try to parse as a generic update message
                     if let Ok(update) = serde_json::from_str::<serde_json::Value>(&message_str) {
                         log(&format!("Received channel update: {:?}", update));
-                        
+
                         // Forward channel updates to WebSocket clients
                         let server_response = ServerResponse::MessageUpdate {
                             message: ChatMessage {
@@ -727,16 +769,19 @@ impl MessageServerClientGuest for Component {
                                 finished: Some(true),
                             },
                         };
-                        
+
                         // Broadcast to all active connections
                         for connection_id in state.active_connections.keys() {
                             if let Ok(ws_message) = create_websocket_message(&server_response) {
                                 if let Err(e) = http_framework::send_websocket_message(
-                                    state.server_id, 
-                                    *connection_id, 
-                                    &ws_message
+                                    state.server_id,
+                                    *connection_id,
+                                    &ws_message,
                                 ) {
-                                    log(&format!("Failed to send channel update to connection {}: {}", connection_id, e));
+                                    log(&format!(
+                                        "Failed to send channel update to connection {}: {}",
+                                        connection_id, e
+                                    ));
                                 }
                             }
                         }
@@ -746,10 +791,10 @@ impl MessageServerClientGuest for Component {
         } else {
             log("Received non-UTF8 channel message");
         }
-        
+
         Ok((Some(set_state(&state)),))
     }
-    
+
     fn handle_channel_close(
         state: Option<Vec<u8>>,
         _params: (ChannelId,),
@@ -766,13 +811,18 @@ fn handle_chat_state_response(
 ) -> Result<(), String> {
     match response {
         ChatStateResponse::ChatMessage { message } => {
-            log(&format!("Received chat message from chat-state: {:?}", message));
-            
+            log(&format!(
+                "Received chat message from chat-state: {:?}",
+                message
+            ));
+
             // Convert chat-state message to our display format
             let display_message = ChatMessage {
                 id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
                 role: message.role,
-                content: message.content.into_iter()
+                content: message
+                    .content
+                    .into_iter()
                     .filter_map(|c| match c {
                         MessageContent::Text { text } => Some(text),
                     })
@@ -781,25 +831,28 @@ fn handle_chat_state_response(
                 timestamp: 0, // TODO: Get actual timestamp
                 finished: Some(true),
             };
-            
+
             // Broadcast to all WebSocket connections
             let server_response = ServerResponse::MessageAdded {
                 message: display_message,
             };
-            
+
             // Send to all active connections
             for connection_id in state.active_connections.keys() {
                 if let Ok(ws_message) = create_websocket_message(&server_response) {
                     if let Err(e) = http_framework::send_websocket_message(
-                        state.server_id, 
-                        *connection_id, 
-                        &ws_message
+                        state.server_id,
+                        *connection_id,
+                        &ws_message,
                     ) {
-                        log(&format!("Failed to send WebSocket message to connection {}: {}", connection_id, e));
+                        log(&format!(
+                            "Failed to send WebSocket message to connection {}: {}",
+                            connection_id, e
+                        ));
                     }
                 }
             }
-            
+
             Ok(())
         }
         ChatStateResponse::Success => {
@@ -807,25 +860,31 @@ fn handle_chat_state_response(
             Ok(())
         }
         ChatStateResponse::Error { error } => {
-            log(&format!("Received error from chat-state: {} - {}", error.code, error.message));
-            
+            log(&format!(
+                "Received error from chat-state: {} - {}",
+                error.code, error.message
+            ));
+
             // Send error to WebSocket clients
             let error_response = ServerResponse::Error {
                 message: format!("Chat error: {}", error.message),
             };
-            
+
             for connection_id in state.active_connections.keys() {
                 if let Ok(ws_message) = create_websocket_message(&error_response) {
                     if let Err(e) = http_framework::send_websocket_message(
-                        state.server_id, 
-                        *connection_id, 
-                        &ws_message
+                        state.server_id,
+                        *connection_id,
+                        &ws_message,
                     ) {
-                        log(&format!("Failed to send error to connection {}: {}", connection_id, e));
+                        log(&format!(
+                            "Failed to send error to connection {}: {}",
+                            connection_id, e
+                        ));
                     }
                 }
             }
-            
+
             Ok(())
         }
         ChatStateResponse::History { messages: _ } => {
@@ -846,7 +905,7 @@ impl SupervisorHandlersGuest for Component {
             "Child actor {} encountered error: {:?}",
             actor_id, error
         ));
-        
+
         // Handle the error - could restart child, notify user, etc.
         // For now, just log it and return the same state
         Ok((state,))
@@ -857,11 +916,8 @@ impl SupervisorHandlersGuest for Component {
         params: (String, Option<Vec<u8>>),
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (actor_id, _exit_state) = params;
-        log(&format!(
-            "Child actor {} exited",
-            actor_id
-        ));
-        
+        log(&format!("Child actor {} exited", actor_id));
+
         // Handle child exit - cleanup, restart if needed, etc.
         Ok((state,))
     }
@@ -871,14 +927,12 @@ impl SupervisorHandlersGuest for Component {
         params: (String,),
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (actor_id,) = params;
-        log(&format!(
-            "Child actor {} externally stopped",
-            actor_id
-        ));
-        
+        log(&format!("Child actor {} externally stopped", actor_id));
+
         // Handle external stop
         Ok((state,))
     }
 }
 
 bindings::export!(Component with_types_in bindings);
+
