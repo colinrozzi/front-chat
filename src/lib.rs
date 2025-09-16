@@ -135,7 +135,7 @@ struct HeadUpdateContent {
 #[serde(untagged)]
 enum MessageEntry {
     Message {
-        role: String,
+        role: String, // "User" or "Assistant" (capitalized)
         content: Vec<MessageContent>,
         #[serde(default)]
         stop_reason: Option<String>,
@@ -290,30 +290,66 @@ impl Guest for Component {
                     id
                 ));
 
-                // Open a channel for real-time head updates
-                log("Opening channel for real-time head updates...");
-                let subscribe_message = serde_json::json!({
-                    "type": "channel_subscribe",
-                    "channel": format!("conversation_{}", conversation_id)
-                });
+                // Get the actual chat-state actor ID from the proxy
+                log("Getting chat-state actor ID from proxy...");
+                let get_actor_id_request = ChatProxyRequest::GetChatStateActorId;
+                let request_json = serde_json::to_string(&get_actor_id_request)
+                    .map_err(|e| format!("Failed to serialize get actor ID request: {}", e))?;
 
-                let subscribe_bytes = serde_json::to_vec(&subscribe_message)
-                    .map_err(|e| format!("Failed to serialize subscribe message: {}", e))?;
+                let channel_id = match bindings::theater::simple::message_server_host::request(&id, request_json.as_bytes()) {
+                    Ok(response_bytes) => {
+                        match String::from_utf8(response_bytes) {
+                            Ok(response_str) => {
+                                log(&format!("Get actor ID response: {}", response_str));
+                                match serde_json::from_str::<ChatProxyResponse>(&response_str) {
+                                    Ok(ChatProxyResponse::ChatStateActorId { actor_id }) => {
+                                        log(&format!("Got chat-state actor ID: {}", actor_id));
+                                        
+                                        // Now open channel with the actual chat-state actor
+                                        log("Opening channel with actual chat-state actor...");
+                                        let subscribe_message = serde_json::json!({
+                                            "type": "channel_subscribe",
+                                            "channel": format!("conversation_{}", conversation_id)
+                                        });
 
-                let channel_id = match open_channel(&id, &subscribe_bytes) {
-                    Ok(channel_id) => {
-                        log(&format!(
-                            "Successfully opened channel: {}",
-                            channel_id
-                        ));
-                        Some(channel_id)
+                                        let subscribe_bytes = serde_json::to_vec(&subscribe_message)
+                                            .map_err(|e| format!("Failed to serialize subscribe message: {}", e))?;
+
+                                        match open_channel(&actor_id, &subscribe_bytes) {
+                                            Ok(channel_id) => {
+                                                log(&format!(
+                                                    "Successfully opened channel with chat-state: {}",
+                                                    channel_id
+                                                ));
+                                                Some(channel_id)
+                                            }
+                                            Err(e) => {
+                                                log(&format!(
+                                                    "Failed to open channel with chat-state: {}",
+                                                    e
+                                                ));
+                                                None
+                                            }
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        log("Unexpected response type from get actor ID");
+                                        None
+                                    }
+                                    Err(e) => {
+                                        log(&format!("Failed to parse get actor ID response: {}", e));
+                                        None
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log(&format!("Failed to decode get actor ID response: {}", e));
+                                None
+                            }
+                        }
                     }
                     Err(e) => {
-                        log(&format!(
-                            "Failed to open channel: {}",
-                            e
-                        ));
-                        // Continue without channel - we'll still get direct message responses
+                        log(&format!("Failed to get chat-state actor ID: {:?}", e));
                         None
                     }
                 };
