@@ -173,7 +173,7 @@ fn broadcast_to_connections(
 // --- Actor Implementation ---
 
 impl Guest for Component {
-    fn init(_data: Option<Vec<u8>>, params: (String,)) -> Result<(Option<Vec<u8>>,), String> {
+    fn init(data: Option<Vec<u8>>, params: (String,)) -> Result<(Option<Vec<u8>>,), String> {
         let (actor_id,) = params;
         log(&format!("front-chat actor {} initializing", actor_id));
 
@@ -211,50 +211,22 @@ impl Guest for Component {
         )
         .map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
 
-        // Spawn chat-state actor
+        // Spawn chat-state-proxy actor
         log("Spawning chat-state-proxy actor...");
         let chat_state_manifest = "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml";
 
-        // Create init data for chat-state-proxy using your working config
-        let init_data = serde_json::json!({
-            "actor": {
-                "manifest_path": "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml",
-                "initial_state": {
-                    "config": {
-                        "model_proxy": {
-                            "manifest_path": "/Users/colinrozzi/work/actor-registry/moonshot-proxy/manifest.toml",
-                            "init_state": {
-                                "store_id": null,
-                                "config": {
-                                    "default_model": "moonshot-v1-8k",
-                                    "base_url": "https://api.moonshot.ai/v1",
-                                    "api_key_env": "MOONSHOT_API_KEY",
-                                    "content_format": "String",
-                                    "max_cache_size": 100,
-                                    "timeout_ms": 30000,
-                                    "retry_config": {
-                                        "max_retries": 4,
-                                        "initial_delay_ms": 1000,
-                                        "max_delay_ms": 30000,
-                                        "backoff_multiplier": 2.0,
-                                        "max_total_timeout_ms": 120000
-                                    }
-                                }
-                            },
-                            "model": "kimi-k2-0711-preview"
-                        },
-                        "temperature": 1,
-                        "max_tokens": 8192,
-                        "system_prompt": "You are a helpful assistant.",
-                        "title": "Moonshot Chat",
-                        "mcp_servers": []
-                    }
-                }
+        // Pass through the init data we received to the chat-state-proxy
+        // This allows external control of the configuration
+        let init_bytes = match &data {
+            Some(bytes) => {
+                log("Using provided init data for chat-state-proxy");
+                bytes.clone()
             }
-        });
-
-        let init_bytes = serde_json::to_vec(&init_data)
-            .map_err(|e| format!("Failed to serialize chat-state-proxy init data: {}", e))?;
+            None => {
+                log("No init data provided, using empty config for chat-state-proxy");
+                vec![]
+            }
+        };
 
         let chat_state_id = match spawn(chat_state_manifest, Some(&init_bytes)) {
             Ok(id) => {
