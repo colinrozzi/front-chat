@@ -80,7 +80,7 @@ struct ChatMessage {
     finished: Option<bool>,
 }
 
-// Chat-state actor message protocol (matching your chat-state/src/protocol.rs)
+// Chat-state-proxy actor message protocol
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 enum ChatStateRequest {
@@ -212,32 +212,56 @@ impl Guest for Component {
         .map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
 
         // Spawn chat-state actor
-        log("Spawning chat-state actor...");
-        let chat_state_manifest = "/Users/colinrozzi/work/actor-registry/chat-state/manifest.toml";
+        log("Spawning chat-state-proxy actor...");
+        let chat_state_manifest = "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml";
 
-        // Create init data for chat-state
+        // Create init data for chat-state-proxy using your working config
         let init_data = serde_json::json!({
-            "conversation_id": conversation_id,
-            "config": {
-                "model_proxy": {
-                    "manifest_path": "https://github.com/colinrozzi/google-proxy/releases/latest/download/manifest.toml",
-                    "model": "gemini-1.5-flash"
-                },
-                "temperature": 0.7,
-                "max_tokens": 2048,
-                "title": "New Conversation"
+            "actor": {
+                "manifest_path": "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml",
+                "initial_state": {
+                    "config": {
+                        "model_proxy": {
+                            "manifest_path": "/Users/colinrozzi/work/actor-registry/moonshot-proxy/manifest.toml",
+                            "init_state": {
+                                "store_id": null,
+                                "config": {
+                                    "default_model": "moonshot-v1-8k",
+                                    "base_url": "https://api.moonshot.ai/v1",
+                                    "api_key_env": "MOONSHOT_API_KEY",
+                                    "content_format": "String",
+                                    "max_cache_size": 100,
+                                    "timeout_ms": 30000,
+                                    "retry_config": {
+                                        "max_retries": 4,
+                                        "initial_delay_ms": 1000,
+                                        "max_delay_ms": 30000,
+                                        "backoff_multiplier": 2.0,
+                                        "max_total_timeout_ms": 120000
+                                    }
+                                }
+                            },
+                            "model": "kimi-k2-0711-preview"
+                        },
+                        "temperature": 1,
+                        "max_tokens": 8192,
+                        "system_prompt": "You are a helpful assistant.",
+                        "title": "Moonshot Chat",
+                        "mcp_servers": []
+                    }
+                }
             }
         });
 
         let init_bytes = serde_json::to_vec(&init_data)
-            .map_err(|e| format!("Failed to serialize chat-state init data: {}", e))?;
+            .map_err(|e| format!("Failed to serialize chat-state-proxy init data: {}", e))?;
 
         let chat_state_id = match spawn(chat_state_manifest, Some(&init_bytes)) {
             Ok(id) => {
-                log(&format!("Successfully spawned chat-state actor: {}", id));
+                log(&format!("Successfully spawned chat-state-proxy actor: {}", id));
 
-                // Open a channel with chat-state for real-time updates
-                log("Opening channel with chat-state for real-time updates...");
+                // Open a channel with chat-state-proxy for real-time updates
+                log("Opening channel with chat-state-proxy for real-time updates...");
                 let subscribe_message = serde_json::json!({
                     "type": "channel_subscribe",
                     "channel": format!("conversation_{}", conversation_id)
@@ -255,7 +279,7 @@ impl Guest for Component {
                         // We'll store the channel ID in state later when we can update it
                     }
                     Err(e) => {
-                        log(&format!("Failed to open channel with chat-state: {}", e));
+                        log(&format!("Failed to open channel with chat-state-proxy: {}", e));
                         // Continue without channel - we'll still get direct message responses
                     }
                 }
@@ -263,8 +287,8 @@ impl Guest for Component {
                 Some(id)
             }
             Err(e) => {
-                log(&format!("Failed to spawn chat-state actor: {}", e));
-                // Continue without chat-state for now
+                log(&format!("Failed to spawn chat-state-proxy actor: {}", e));
+                // Continue without chat-state-proxy for now
                 None
             }
         };
@@ -462,7 +486,7 @@ fn handle_client_request(
             // Send to chat-state actor if available
             if let Some(chat_state_id) = &state.chat_state_id {
                 log(&format!(
-                    "Sending message to chat-state actor: {}",
+                    "Sending message to chat-state-proxy actor: {}",
                     chat_state_id
                 ));
 
@@ -482,9 +506,9 @@ fn handle_client_request(
 
                 // Send message to chat-state actor
                 if let Err(e) = send(&chat_state_id, request_json.as_bytes()) {
-                    log(&format!("Failed to send add_message to chat-state: {}", e));
+                    log(&format!("Failed to send add_message to chat-state-proxy: {}", e));
                 } else {
-                    log("Successfully sent add_message to chat-state");
+                    log("Successfully sent add_message to chat-state-proxy");
 
                     // Now request completion
                     let completion_request = ChatStateRequest::GenerateCompletion;
@@ -493,22 +517,22 @@ fn handle_client_request(
 
                     if let Err(e) = send(&chat_state_id, completion_json.as_bytes()) {
                         log(&format!(
-                            "Failed to send generate_completion to chat-state: {}",
+                            "Failed to send generate_completion to chat-state-proxy: {}",
                             e
                         ));
                     } else {
-                        log("Successfully sent generate_completion to chat-state");
+                        log("Successfully sent generate_completion to chat-state-proxy");
                     }
                 }
             } else {
-                log("No chat-state actor available, creating fallback response");
+                log("No chat-state-proxy actor available, creating fallback response");
 
                 // Fallback: create a simple response
                 let assistant_message = ChatMessage {
                     id: generate_uuid()
                         .map_err(|e| format!("Failed to generate message ID: {}", e))?,
                     role: "assistant".to_string(),
-                    content: "Chat-state actor not available. Please try again.".to_string(),
+                    content: "Chat-state-proxy actor not available. Please try again.".to_string(),
                     timestamp: 0,
                     finished: Some(true),
                 };
