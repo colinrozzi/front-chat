@@ -242,12 +242,18 @@ impl Guest for Component {
             .map_err(|e| e.to_string())?;
 
         // Enable WebSocket
+        log("Configuring WebSocket endpoint at /ws");
         http_framework::enable_websocket(
-            server_id, "/ws", None,       // connect handler (optional)
+            server_id, 
+            "/ws", 
+            Some(ws_handler), // connect handler - CHANGED from None to Some
             ws_handler, // message handler (required)
-            None,       // disconnect handler (optional)
+            Some(ws_handler), // disconnect handler - CHANGED from None to Some
         )
         .map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
+        
+        log("WebSocket endpoint configured successfully");
+log("WebSocket handlers - connect: Some, message: registered, disconnect: Some");
 
         // Parse configuration from init data
         let actor_config = match &data {
@@ -415,8 +421,8 @@ impl HttpHandlersGuest for Component {
         let (_handler_id, request) = params;
 
         log(&format!(
-            "Handling {} request to {}",
-            request.method, request.uri
+            "Handling {} request to {} (headers: {:?})",
+            request.method, request.uri, request.headers
         ));
 
         let response = match (request.method.as_str(), request.uri.as_str()) {
