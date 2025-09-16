@@ -118,6 +118,34 @@ struct ErrorInfo {
     pub message: String,
 }
 
+// Head update message types (from chat-state channels)
+#[derive(Serialize, Deserialize, Debug)]
+struct HeadUpdateMessage {
+    #[serde(rename = "type")]
+    message_type: String, // "chat_message"
+    message: HeadUpdateContent,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct HeadUpdateContent {
+    entry: MessageEntry,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+enum MessageEntry {
+    Message {
+        role: String,
+        content: Vec<MessageContent>,
+        #[serde(default)]
+        stop_reason: Option<String>,
+    },
+    Completion {
+        content: Vec<MessageContent>,
+        stop_reason: String,
+    },
+}
+
 // --- State Management ---
 
 fn get_state(state_bytes: &Option<Vec<u8>>) -> Result<FrontChatState, String> {
@@ -202,26 +230,54 @@ impl Guest for Component {
         )
         .map_err(|e| format!("Failed to enable WebSocket: {}", e))?;
 
-        // Spawn chat-state-proxy actor
-        log("Spawning chat-state-proxy actor...");
-        let chat_state_manifest =
-            "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml";
-
-        // Pass through the init data we received to the chat-state-proxy
-        // This allows external control of the configuration
-        let init_bytes = match &data {
+        // Parse configuration from init data
+        let actor_config = match &data {
             Some(bytes) => {
-                log("Using provided init data for chat-state-proxy");
-                bytes.clone()
+                log("Parsing actor configuration from init data");
+                match serde_json::from_slice::<serde_json::Value>(bytes) {
+                    Ok(config) => {
+                        log(&format!("Parsed config: {}", config));
+                        config
+                    }
+                    Err(e) => {
+                        return Err(format!("Failed to parse init configuration: {}", e));
+                    }
+                }
             }
             None => {
-                log("No init data provided, using empty config for chat-state-proxy");
+                return Err("No configuration provided - actor config is required".to_string());
+            }
+        };
+
+        // Extract actor manifest path and initial state
+        let manifest_path = actor_config
+            .get("actor")
+            .and_then(|a| a.get("manifest_path"))
+            .and_then(|p| p.as_str())
+            .ok_or("Missing actor.manifest_path in configuration")?;
+
+        let initial_state = actor_config
+            .get("actor")
+            .and_then(|a| a.get("initial_state"))
+            .cloned();
+
+        log(&format!("Spawning actor from manifest: {}", manifest_path));
+
+        // Prepare init bytes for the spawned actor
+        let init_bytes = match initial_state {
+            Some(state) => {
+                log("Using provided initial state for spawned actor");
+                serde_json::to_vec(&state)
+                    .map_err(|e| format!("Failed to serialize initial state: {}", e))?
+            }
+            None => {
+                log("No initial state provided for spawned actor");
                 vec![]
             }
         };
 
-        let chat_state_id = match spawn(
-            chat_state_manifest,
+        let (chat_state_id, chat_state_channel) = match spawn(
+            manifest_path,
             if init_bytes.is_empty() {
                 None
             } else {
@@ -230,12 +286,12 @@ impl Guest for Component {
         ) {
             Ok(id) => {
                 log(&format!(
-                    "Successfully spawned chat-state-proxy actor: {}",
+                    "Successfully spawned actor: {}",
                     id
                 ));
 
-                // Open a channel with chat-state-proxy for real-time updates
-                log("Opening channel with chat-state-proxy for real-time updates...");
+                // Open a channel for real-time head updates
+                log("Opening channel for real-time head updates...");
                 let subscribe_message = serde_json::json!({
                     "type": "channel_subscribe",
                     "channel": format!("conversation_{}", conversation_id)
@@ -244,29 +300,30 @@ impl Guest for Component {
                 let subscribe_bytes = serde_json::to_vec(&subscribe_message)
                     .map_err(|e| format!("Failed to serialize subscribe message: {}", e))?;
 
-                match open_channel(&id, &subscribe_bytes) {
+                let channel_id = match open_channel(&id, &subscribe_bytes) {
                     Ok(channel_id) => {
                         log(&format!(
-                            "Successfully opened channel with chat-state: {}",
+                            "Successfully opened channel: {}",
                             channel_id
                         ));
-                        // We'll store the channel ID in state later when we can update it
+                        Some(channel_id)
                     }
                     Err(e) => {
                         log(&format!(
-                            "Failed to open channel with chat-state-proxy: {}",
+                            "Failed to open channel: {}",
                             e
                         ));
                         // Continue without channel - we'll still get direct message responses
+                        None
                     }
-                }
+                };
 
-                Some(id)
+                (Some(id), channel_id)
             }
             Err(e) => {
-                log(&format!("Failed to spawn chat-state-proxy actor: {}", e));
-                // Continue without chat-state-proxy for now
-                None
+                log(&format!("Failed to spawn actor: {}", e));
+                // Continue without actor for now
+                (None, None)
             }
         };
 
@@ -283,15 +340,15 @@ impl Guest for Component {
         log("  WS /ws - WebSocket chat connection");
 
         // Save initial state
-        let initial_state = FrontChatState {
+        let final_state = FrontChatState {
             server_id,
             chat_state_id,
             conversation_id,
             active_connections: HashMap::new(),
-            chat_state_channel: None, // Will be set when channel is established
+            chat_state_channel,
         };
 
-        Ok((Some(set_state(&initial_state)),))
+        Ok((Some(set_state(&final_state)),))
     }
 }
 
@@ -741,54 +798,21 @@ impl MessageServerClientGuest for Component {
         if let Ok(message_str) = String::from_utf8(message_bytes) {
             log(&format!("Channel message content: {}", message_str));
 
-            // Try to parse as a chat-state response
-            match serde_json::from_str::<ChatProxyResponse>(&message_str) {
-                Ok(response) => {
-                    log("Received chat-state response via channel");
-                    match handle_chat_proxy_response(&mut state, response) {
-                        Ok(_) => log("Successfully handled channel chat-state response"),
-                        Err(e) => log(&format!(
-                            "Error handling channel chat-state response: {}",
-                            e
-                        )),
+            // Try to parse as head update message
+            match serde_json::from_str::<HeadUpdateMessage>(&message_str) {
+                Ok(head_update) => {
+                    log(&format!("Received head update: {}", head_update.message_type));
+                    match handle_head_update(&mut state, head_update) {
+                        Ok(_) => log("Successfully handled head update"),
+                        Err(e) => log(&format!("Error handling head update: {}", e)),
                     }
                 }
                 Err(e) => {
-                    log(&format!(
-                        "Channel message is not a chat-state response: {}",
-                        e
-                    ));
-
-                    // Try to parse as a generic update message
-                    if let Ok(update) = serde_json::from_str::<serde_json::Value>(&message_str) {
-                        log(&format!("Received channel update: {:?}", update));
-
-                        // Forward channel updates to WebSocket clients
-                        let server_response = ServerResponse::MessageUpdate {
-                            message: ChatMessage {
-                                id: generate_uuid().unwrap_or_else(|_| "update".to_string()),
-                                role: "system".to_string(),
-                                content: format!("Update: {}", update),
-                                timestamp: 0,
-                                finished: Some(true),
-                            },
-                        };
-
-                        // Broadcast to all active connections
-                        for connection_id in state.active_connections.keys() {
-                            if let Ok(ws_message) = create_websocket_message(&server_response) {
-                                if let Err(e) = http_framework::send_websocket_message(
-                                    state.server_id,
-                                    *connection_id,
-                                    &ws_message,
-                                ) {
-                                    log(&format!(
-                                        "Failed to send channel update to connection {}: {}",
-                                        connection_id, e
-                                    ));
-                                }
-                            }
-                        }
+                    log(&format!("Failed to parse head update message: {}", e));
+                    
+                    // Fallback: try to parse as generic JSON and log it
+                    if let Ok(generic) = serde_json::from_str::<serde_json::Value>(&message_str) {
+                        log(&format!("Received unknown channel message: {:?}", generic));
                     }
                 }
             }
@@ -806,6 +830,85 @@ impl MessageServerClientGuest for Component {
         // Not used for our chat implementation
         Ok((state,))
     }
+}
+
+// Handle head updates from chat-state channels
+fn handle_head_update(
+    state: &mut FrontChatState,
+    head_update: HeadUpdateMessage,
+) -> Result<(), String> {
+    if head_update.message_type == "chat_message" {
+        log("Processing chat_message head update");
+        
+        // Convert head update to display message
+        let display_message = convert_head_update_to_chat_message(&head_update)?;
+        
+        // Broadcast as message_added to WebSocket clients
+        let server_response = ServerResponse::MessageAdded {
+            message: display_message,
+        };
+        
+        // Send to all active connections
+        for connection_id in state.active_connections.keys() {
+            if let Ok(ws_message) = create_websocket_message(&server_response) {
+                if let Err(e) = http_framework::send_websocket_message(
+                    state.server_id,
+                    *connection_id,
+                    &ws_message,
+                ) {
+                    log(&format!(
+                        "Failed to send head update to connection {}: {}",
+                        connection_id, e
+                    ));
+                }
+            }
+        }
+    } else {
+        log(&format!("Unknown head update type: {}", head_update.message_type));
+    }
+    
+    Ok(())
+}
+
+fn convert_head_update_to_chat_message(
+    head_update: &HeadUpdateMessage,
+) -> Result<ChatMessage, String> {
+    let message_id = generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?;
+    
+    match &head_update.message.entry {
+        MessageEntry::Message { role, content, .. } => {
+            let text_content = extract_text_content(content);
+            Ok(ChatMessage {
+                id: message_id,
+                role: role.clone(),
+                content: text_content,
+                timestamp: 0, // TODO: Get actual timestamp
+                finished: Some(true),
+            })
+        }
+        MessageEntry::Completion { content, .. } => {
+            let text_content = extract_text_content(content);
+            Ok(ChatMessage {
+                id: message_id,
+                role: "assistant".to_string(),
+                content: text_content,
+                timestamp: 0, // TODO: Get actual timestamp  
+                finished: Some(true),
+            })
+        }
+    }
+}
+
+fn extract_text_content(content: &[MessageContent]) -> String {
+    content
+        .iter()
+        .filter_map(|c| match c {
+            MessageContent::Text(text) => Some(text.clone()),
+            MessageContent::ToolUse(_) => Some("[Tool Use]".to_string()),
+            MessageContent::ToolResult(_) => Some("[Tool Result]".to_string()),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // Handle responses from chat-state-proxy actor
