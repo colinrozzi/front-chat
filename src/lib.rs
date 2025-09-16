@@ -914,37 +914,59 @@ fn convert_head_update_to_chat_message(
     match &head_update.message.entry {
         MessageEntry::Message { role, content, .. } => {
             let text_content = extract_text_content(content);
-            Ok(ChatMessage {
+            
+            let chat_message = ChatMessage {
                 id: message_id,
                 role: role.clone(),
                 content: text_content,
                 timestamp: 0, // TODO: Get actual timestamp
                 finished: Some(true),
-            })
+            };
+            
+            Ok(chat_message)
         }
         MessageEntry::Completion { content, .. } => {
+            
             let text_content = extract_text_content(content);
-            Ok(ChatMessage {
+            
+            let chat_message = ChatMessage {
                 id: message_id,
                 role: "assistant".to_string(),
                 content: text_content,
                 timestamp: 0, // TODO: Get actual timestamp  
                 finished: Some(true),
-            })
+            };
+            
+            Ok(chat_message)
         }
     }
 }
 
 fn extract_text_content(content: &[MessageContent]) -> String {
-    content
+    
+    let extracted: Vec<String> = content
         .iter()
-        .filter_map(|c| match c {
-            MessageContent::Text(text) => Some(text.clone()),
-            MessageContent::ToolUse(_) => Some("[Tool Use]".to_string()),
-            MessageContent::ToolResult(_) => Some("[Tool Result]".to_string()),
+        .enumerate()
+        .filter_map(|(i, c)| {
+            match c {
+                MessageContent::Text(text) => {
+                    log(&format!("📝 Item {}: Text content: '{}'", i, text));
+                    Some(text.clone())
+                }
+                MessageContent::ToolUse(_) => {
+                    log(&format!("🔧 Item {}: Tool Use", i));
+                    Some("[Tool Use]".to_string())
+                }
+                MessageContent::ToolResult(_) => {
+                    log(&format!("📊 Item {}: Tool Result", i));
+                    Some("[Tool Result]".to_string())
+                }
+            }
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect();
+    
+    let result = extracted.join(" ");
+    result
 }
 
 // Handle responses from chat-state-proxy actor
