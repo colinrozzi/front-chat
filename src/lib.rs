@@ -83,28 +83,25 @@ struct ChatMessage {
 // Chat-state-proxy actor message protocol
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
-enum ChatStateRequest {
-    #[serde(rename = "add_message")]
+enum ChatProxyRequest {
+    StartChat,
+    GetChatStateActorId,
     AddMessage { message: ChatStateMessage },
-    #[serde(rename = "generate_completion")]
-    GenerateCompletion,
-    #[serde(rename = "get_history")]
-    GetHistory,
-    #[serde(rename = "get_settings")]
-    GetSettings,
+    #[serde(rename = "get_metadata")]
+    GetMetadata,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
-enum ChatStateResponse {
-    #[serde(rename = "success")]
+enum ChatProxyResponse {
+    ChatStateActorId { actor_id: String },
     Success,
-    #[serde(rename = "chat_message")]
-    ChatMessage { message: ChatStateMessage },
-    #[serde(rename = "history")]
-    History { messages: Vec<ChatStateMessage> },
-    #[serde(rename = "error")]
-    Error { error: ErrorInfo },
+    Error { message: String },
+    #[serde(rename = "metadata")]
+    Metadata {
+        conversation_id: String,
+        store_id: String,
+    },
 }
 
 // Simple message format for chat-state communication
@@ -469,7 +466,7 @@ fn handle_client_request(
                 };
 
                 // Send add_message request
-                let add_message_request = ChatStateRequest::AddMessage {
+                let add_message_request = ChatProxyRequest::AddMessage {
                     message: chat_state_message,
                 };
 
@@ -486,25 +483,8 @@ fn handle_client_request(
                             log(&format!("Add message response: {}", response_str));
                         }
 
-                        // Now request completion
-                        let completion_request = ChatStateRequest::GenerateCompletion;
-                        let completion_json = serde_json::to_string(&completion_request)
-                            .map_err(|e| format!("Failed to serialize completion request: {}", e))?;
-
-                        match bindings::theater::simple::message_server_host::request(&chat_state_id, completion_json.as_bytes()) {
-                            Ok(completion_response) => {
-                                log("Successfully sent generate_completion to chat-state-proxy");
-                                if let Ok(completion_str) = String::from_utf8(completion_response) {
-                                    log(&format!("Completion response: {}", completion_str));
-                                }
-                            }
-                            Err(e) => {
-                                log(&format!(
-                                    "Failed to send generate_completion to chat-state-proxy: {:?}",
-                                    e
-                                ));
-                            }
-                        }
+                        // Chat-state-proxy handles completion automatically after AddMessage
+                        // No need for separate GenerateCompletion request
                     }
                     Err(e) => {
                         log(&format!("Failed to send add_message to chat-state-proxy: {:?}", e));
@@ -642,8 +622,8 @@ impl MessageServerClientGuest for Component {
             let mut state = get_state(&state_bytes)?;
 
             // Parse the message from chat-state
-            match serde_json::from_str::<ChatStateResponse>(&message_str) {
-                Ok(response) => match handle_chat_state_response(&mut state, response) {
+            match serde_json::from_str::<ChatProxyResponse>(&message_str) {
+                Ok(response) => match handle_chat_proxy_response(&mut state, response) {
                     Ok(_) => log("Successfully handled chat-state response"),
                     Err(e) => log(&format!("Error handling chat-state response: {}", e)),
                 },
@@ -748,10 +728,10 @@ impl MessageServerClientGuest for Component {
             log(&format!("Channel message content: {}", message_str));
 
             // Try to parse as a chat-state response
-            match serde_json::from_str::<ChatStateResponse>(&message_str) {
+            match serde_json::from_str::<ChatProxyResponse>(&message_str) {
                 Ok(response) => {
                     log("Received chat-state response via channel");
-                    match handle_chat_state_response(&mut state, response) {
+                    match handle_chat_proxy_response(&mut state, response) {
                         Ok(_) => log("Successfully handled channel chat-state response"),
                         Err(e) => log(&format!(
                             "Error handling channel chat-state response: {}",
@@ -814,70 +794,25 @@ impl MessageServerClientGuest for Component {
     }
 }
 
-// Handle responses from chat-state actor
-fn handle_chat_state_response(
+// Handle responses from chat-state-proxy actor
+fn handle_chat_proxy_response(
     state: &mut FrontChatState,
-    response: ChatStateResponse,
+    response: ChatProxyResponse,
 ) -> Result<(), String> {
     match response {
-        ChatStateResponse::ChatMessage { message } => {
+        ChatProxyResponse::Success => {
+            log("Received success response from chat-state-proxy");
+            Ok(())
+        }
+        ChatProxyResponse::Error { message } => {
             log(&format!(
-                "Received chat message from chat-state: {:?}",
+                "Received error from chat-state-proxy: {}",
                 message
-            ));
-
-            // Convert chat-state message to our display format
-            let display_message = ChatMessage {
-                id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
-                role: message.role,
-                content: message
-                    .content
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        MessageContent::Text { text } => Some(text),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                timestamp: 0, // TODO: Get actual timestamp
-                finished: Some(true),
-            };
-
-            // Broadcast to all WebSocket connections
-            let server_response = ServerResponse::MessageAdded {
-                message: display_message,
-            };
-
-            // Send to all active connections
-            for connection_id in state.active_connections.keys() {
-                if let Ok(ws_message) = create_websocket_message(&server_response) {
-                    if let Err(e) = http_framework::send_websocket_message(
-                        state.server_id,
-                        *connection_id,
-                        &ws_message,
-                    ) {
-                        log(&format!(
-                            "Failed to send WebSocket message to connection {}: {}",
-                            connection_id, e
-                        ));
-                    }
-                }
-            }
-
-            Ok(())
-        }
-        ChatStateResponse::Success => {
-            log("Received success response from chat-state");
-            Ok(())
-        }
-        ChatStateResponse::Error { error } => {
-            log(&format!(
-                "Received error from chat-state: {} - {}",
-                error.code, error.message
             ));
 
             // Send error to WebSocket clients
             let error_response = ServerResponse::Error {
-                message: format!("Chat error: {}", error.message),
+                message: format!("Chat error: {}", message),
             };
 
             for connection_id in state.active_connections.keys() {
@@ -897,8 +832,14 @@ fn handle_chat_state_response(
 
             Ok(())
         }
-        ChatStateResponse::History { messages: _ } => {
-            log("Received history response from chat-state (not implemented yet)");
+        ChatProxyResponse::ChatStateActorId { actor_id: _ } => {
+            log("Received chat state actor ID from proxy");
+            // Not used in this context
+            Ok(())
+        }
+        ChatProxyResponse::Metadata { conversation_id: _, store_id: _ } => {
+            log("Received metadata from proxy");
+            // Not used in this context but could be useful
             Ok(())
         }
     }
