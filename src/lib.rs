@@ -118,32 +118,50 @@ struct ErrorInfo {
     pub message: String,
 }
 
-// Head update message types (from chat-state channels)
+// Channel message types (from chat-state channels)
 #[derive(Serialize, Deserialize, Debug)]
-struct HeadUpdateMessage {
-    #[serde(rename = "type")]
-    message_type: String, // "chat_message"
-    message: HeadUpdateContent,
+#[serde(tag = "type")]
+enum ChannelMessage {
+    #[serde(rename = "head")]
+    Head { head: String },
+    #[serde(rename = "chat_message")]
+    ChatMessage { message: ChatMessageEntry },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct HeadUpdateContent {
-    entry: MessageEntry,
+struct ChatMessageEntry {
+    id: String,
+    parent_id: Option<String>,
+    entry: MessageEntryVariant,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
-enum MessageEntry {
-    Message {
-        role: String, // "User" or "Assistant" (capitalized)
-        content: Vec<MessageContent>,
-        #[serde(default)]
-        stop_reason: Option<String>,
-    },
-    Completion {
-        content: Vec<MessageContent>,
-        stop_reason: String,
-    },
+enum MessageEntryVariant {
+    Message(UserMessage),
+    Completion(CompletionMessage),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct UserMessage {
+    role: String,
+    content: Vec<MessageContent>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CompletionMessage {
+    content: Vec<MessageContent>,
+    id: String,
+    model: String,
+    role: String,
+    stop_reason: String,
+    usage: Option<TokenUsage>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct TokenUsage {
+    input_tokens: u32,
+    output_tokens: u32,
 }
 
 // --- State Management ---
@@ -448,6 +466,11 @@ impl HttpHandlersGuest for Component {
                 connected_at: 0, // TODO: Get actual timestamp
             },
         );
+        
+        log(&format!(
+            "Active connections count: {}", 
+            state.active_connections.len()
+        ));
 
         // Send welcome message
         let welcome_response = ServerResponse::Connected {
@@ -834,21 +857,26 @@ impl MessageServerClientGuest for Component {
         if let Ok(message_str) = String::from_utf8(message_bytes) {
             log(&format!("Channel message content: {}", message_str));
 
-            // Try to parse as head update message
-            match serde_json::from_str::<HeadUpdateMessage>(&message_str) {
-                Ok(head_update) => {
-                    log(&format!("Received head update: {}", head_update.message_type));
-                    match handle_head_update(&mut state, head_update) {
-                        Ok(_) => log("Successfully handled head update"),
-                        Err(e) => log(&format!("Error handling head update: {}", e)),
+            // Parse as channel message
+            match serde_json::from_str::<ChannelMessage>(&message_str) {
+                Ok(ChannelMessage::Head { head }) => {
+                    log(&format!("Received head update: {}", head));
+                    // Head updates indicate new messages are available
+                    // For now, we'll just log them as they don't need immediate action
+                }
+                Ok(ChannelMessage::ChatMessage { message }) => {
+                    log("Processing chat message from channel");
+                    match handle_chat_message_update(&mut state, message) {
+                        Ok(_) => log("Successfully handled chat message update"),
+                        Err(e) => log(&format!("Error handling chat message: {}", e)),
                     }
                 }
                 Err(e) => {
-                    log(&format!("Failed to parse head update message: {}", e));
+                    log(&format!("Failed to parse channel message: {}", e));
                     
-                    // Fallback: try to parse as generic JSON and log it
+                    // Fallback: try to parse as generic JSON for debugging
                     if let Ok(generic) = serde_json::from_str::<serde_json::Value>(&message_str) {
-                        log(&format!("Received unknown channel message: {:?}", generic));
+                        log(&format!("Raw channel message: {:?}", generic));
                     }
                 }
             }
@@ -868,82 +896,69 @@ impl MessageServerClientGuest for Component {
     }
 }
 
-// Handle head updates from chat-state channels
-fn handle_head_update(
+// Handle chat message updates from channels
+fn handle_chat_message_update(
     state: &mut FrontChatState,
-    head_update: HeadUpdateMessage,
+    chat_message: ChatMessageEntry,
 ) -> Result<(), String> {
-    if head_update.message_type == "chat_message" {
-        log("Processing chat_message head update");
-        
-        // Convert head update to display message
-        let display_message = convert_head_update_to_chat_message(&head_update)?;
-        
-        // Broadcast as message_added to WebSocket clients
-        let server_response = ServerResponse::MessageAdded {
-            message: display_message,
-        };
-        
-        // Send to all active connections
-        for connection_id in state.active_connections.keys() {
-            if let Ok(ws_message) = create_websocket_message(&server_response) {
-                if let Err(e) = http_framework::send_websocket_message(
-                    state.server_id,
-                    *connection_id,
-                    &ws_message,
-                ) {
-                    log(&format!(
-                        "Failed to send head update to connection {}: {}",
-                        connection_id, e
-                    ));
-                }
+    log(&format!("Processing chat message with ID: {}", chat_message.id));
+    
+    let display_message = match chat_message.entry {
+        MessageEntryVariant::Message(user_msg) => {
+            log(&format!("User message: {:?}", user_msg));
+            ChatMessage {
+                id: chat_message.id,
+                role: user_msg.role.to_lowercase(), // Convert "User" -> "user"
+                content: extract_text_content(&user_msg.content),
+                timestamp: 0, // TODO: Add actual timestamp
+                finished: Some(true),
             }
         }
-    } else {
-        log(&format!("Unknown head update type: {}", head_update.message_type));
+        MessageEntryVariant::Completion(completion) => {
+            log(&format!("Assistant completion: {}", completion.model));
+            ChatMessage {
+                id: chat_message.id,
+                role: "assistant".to_string(),
+                content: extract_text_content(&completion.content),
+                timestamp: 0, // TODO: Add actual timestamp
+                finished: Some(completion.stop_reason == "EndTurn"),
+            }
+        }
+    };
+    
+    // Broadcast to WebSocket clients
+    let server_response = ServerResponse::MessageAdded {
+        message: display_message,
+    };
+    
+    // Send to all active connections
+    log(&format!(
+        "Broadcasting message to {} active connections", 
+        state.active_connections.len()
+    ));
+    
+    for connection_id in state.active_connections.keys() {
+        log(&format!("Sending message to connection: {}", connection_id));
+        if let Ok(ws_message) = create_websocket_message(&server_response) {
+            if let Err(e) = http_framework::send_websocket_message(
+                state.server_id,
+                *connection_id,
+                &ws_message,
+            ) {
+                log(&format!(
+                    "Failed to send message to connection {}: {}",
+                    connection_id, e
+                ));
+            } else {
+                log(&format!("Successfully sent message to connection {}", connection_id));
+            }
+        }
     }
     
     Ok(())
 }
 
-fn convert_head_update_to_chat_message(
-    head_update: &HeadUpdateMessage,
-) -> Result<ChatMessage, String> {
-    let message_id = generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?;
-    
-    match &head_update.message.entry {
-        MessageEntry::Message { role, content, .. } => {
-            let text_content = extract_text_content(content);
-            
-            let chat_message = ChatMessage {
-                id: message_id,
-                role: role.clone(),
-                content: text_content,
-                timestamp: 0, // TODO: Get actual timestamp
-                finished: Some(true),
-            };
-            
-            Ok(chat_message)
-        }
-        MessageEntry::Completion { content, .. } => {
-            
-            let text_content = extract_text_content(content);
-            
-            let chat_message = ChatMessage {
-                id: message_id,
-                role: "assistant".to_string(),
-                content: text_content,
-                timestamp: 0, // TODO: Get actual timestamp  
-                finished: Some(true),
-            };
-            
-            Ok(chat_message)
-        }
-    }
-}
-
 fn extract_text_content(content: &[MessageContent]) -> String {
-    
     let extracted: Vec<String> = content
         .iter()
         .enumerate()
@@ -966,6 +981,7 @@ fn extract_text_content(content: &[MessageContent]) -> String {
         .collect();
     
     let result = extracted.join(" ");
+    log(&format!("✅ Extracted text content: '{}'", result));
     result
 }
 
