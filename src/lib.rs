@@ -1,6 +1,7 @@
 #[allow(warnings)]
 mod bindings;
 
+use bindings::colinrozzi::genai_types::types::{Message, MessageContent, MessageRole};
 use bindings::exports::theater::simple::actor::Guest;
 use bindings::exports::theater::simple::http_handlers::Guest as HttpHandlersGuest;
 use bindings::exports::theater::simple::message_server_client::Guest as MessageServerClientGuest;
@@ -13,8 +14,8 @@ use bindings::theater::simple::runtime::log;
 use bindings::theater::simple::supervisor::spawn;
 use bindings::theater::simple::types::{ChannelAccept, ChannelId};
 use bindings::theater::simple::websocket_types::{MessageType, WebsocketMessage};
-use bindings::colinrozzi::genai_types::types::{Message, MessageContent, MessageRole};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 struct Component;
@@ -87,7 +88,9 @@ struct ChatMessage {
 enum ChatProxyRequest {
     StartChat,
     GetChatStateActorId,
-    AddMessage { message: Message },
+    AddMessage {
+        message: Message,
+    },
     #[serde(rename = "get_metadata")]
     GetMetadata,
 }
@@ -95,9 +98,13 @@ enum ChatProxyRequest {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 enum ChatProxyResponse {
-    ChatStateActorId { actor_id: String },
+    ChatStateActorId {
+        actor_id: String,
+    },
     Success,
-    Error { message: String },
+    Error {
+        message: String,
+    },
     #[serde(rename = "metadata")]
     Metadata {
         conversation_id: String,
@@ -197,7 +204,8 @@ impl Guest for Component {
 
         // Spawn chat-state-proxy actor
         log("Spawning chat-state-proxy actor...");
-        let chat_state_manifest = "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml";
+        let chat_state_manifest =
+            "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml";
 
         // Pass through the init data we received to the chat-state-proxy
         // This allows external control of the configuration
@@ -212,9 +220,19 @@ impl Guest for Component {
             }
         };
 
-        let chat_state_id = match spawn(chat_state_manifest, if init_bytes.is_empty() { None } else { Some(&init_bytes) }) {
+        let chat_state_id = match spawn(
+            chat_state_manifest,
+            if init_bytes.is_empty() {
+                None
+            } else {
+                Some(&init_bytes)
+            },
+        ) {
             Ok(id) => {
-                log(&format!("Successfully spawned chat-state-proxy actor: {}", id));
+                log(&format!(
+                    "Successfully spawned chat-state-proxy actor: {}",
+                    id
+                ));
 
                 // Open a channel with chat-state-proxy for real-time updates
                 log("Opening channel with chat-state-proxy for real-time updates...");
@@ -235,7 +253,10 @@ impl Guest for Component {
                         // We'll store the channel ID in state later when we can update it
                     }
                     Err(e) => {
-                        log(&format!("Failed to open channel with chat-state-proxy: {}", e));
+                        log(&format!(
+                            "Failed to open channel with chat-state-proxy: {}",
+                            e
+                        ));
                         // Continue without channel - we'll still get direct message responses
                     }
                 }
@@ -461,10 +482,13 @@ fn handle_client_request(
                     .map_err(|e| format!("Failed to serialize chat-state request: {}", e))?;
 
                 // Send message to chat-state actor using request for proper response handling
-                match bindings::theater::simple::message_server_host::request(&chat_state_id, request_json.as_bytes()) {
+                match bindings::theater::simple::message_server_host::request(
+                    &chat_state_id,
+                    request_json.as_bytes(),
+                ) {
                     Ok(response_bytes) => {
                         log("Successfully sent add_message to chat-state-proxy");
-                        
+
                         // Parse response if needed
                         if let Ok(response_str) = String::from_utf8(response_bytes) {
                             log(&format!("Add message response: {}", response_str));
@@ -474,7 +498,10 @@ fn handle_client_request(
                         // No need for separate GenerateCompletion request
                     }
                     Err(e) => {
-                        log(&format!("Failed to send add_message to chat-state-proxy: {:?}", e));
+                        log(&format!(
+                            "Failed to send add_message to chat-state-proxy: {:?}",
+                            e
+                        ));
                     }
                 }
             } else {
@@ -824,7 +851,10 @@ fn handle_chat_proxy_response(
             // Not used in this context
             Ok(())
         }
-        ChatProxyResponse::Metadata { conversation_id: _, store_id: _ } => {
+        ChatProxyResponse::Metadata {
+            conversation_id: _,
+            store_id: _,
+        } => {
             log("Received metadata from proxy");
             // Not used in this context but could be useful
             Ok(())
@@ -839,10 +869,14 @@ impl SupervisorHandlersGuest for Component {
         params: (String, bindings::theater::simple::types::WitActorError),
     ) -> Result<(Option<Vec<u8>>,), String> {
         let (actor_id, error) = params;
-        log(&format!(
-            "Child actor {} encountered error: {:?}",
-            actor_id, error
-        ));
+        log(&format!("Child actor {} encountered an error", actor_id));
+
+        if let Some(err_msg) = error.data {
+            match serde_json::from_slice::<Value>(&err_msg) {
+                Ok(json) => log(&format!("Error details: {:?}", json)),
+                Err(e) => log(&format!("Failed to parse error details: {}", e)),
+            }
+        }
 
         // Handle the error - could restart child, notify user, etc.
         // For now, just log it and return the same state
@@ -853,8 +887,15 @@ impl SupervisorHandlersGuest for Component {
         state: Option<Vec<u8>>,
         params: (String, Option<Vec<u8>>),
     ) -> Result<(Option<Vec<u8>>,), String> {
-        let (actor_id, _exit_state) = params;
+        let (actor_id, exit_state) = params;
         log(&format!("Child actor {} exited", actor_id));
+
+        if let Some(err_msg) = exit_state {
+            match serde_json::from_slice::<Value>(&err_msg) {
+                Ok(json) => log(&format!("Error details: {:?}", json)),
+                Err(e) => log(&format!("Failed to parse error details: {}", e)),
+            }
+        }
 
         // Handle child exit - cleanup, restart if needed, etc.
         Ok((state,))
@@ -873,4 +914,3 @@ impl SupervisorHandlersGuest for Component {
 }
 
 bindings::export!(Component with_types_in bindings);
-
