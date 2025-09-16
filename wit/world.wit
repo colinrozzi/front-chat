@@ -1,6 +1,7 @@
 package component:front-chat;
 
 world default {
+    import colinrozzi:genai-types/types;
     import theater:simple/runtime;
     import theater:simple/http-framework;
     import theater:simple/http-types;
