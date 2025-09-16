@@ -1,0 +1,45 @@
+{
+  "actor": {
+    "manifest_path": "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml",
+    "initial_state": {
+      "config": {
+        "model_proxy": {
+          "manifest_path": "/Users/colinrozzi/work/actor-registry/moonshot-proxy/manifest.toml",
+          "init_state": {
+            "store_id": null,
+            "config": {
+              "default_model": "moonshot-v1-8k",
+              "base_url": "https://api.moonshot.ai/v1",
+              "api_key_env": "MOONSHOT_API_KEY",
+              "content_format": "String",
+              "max_cache_size": 100,
+              "timeout_ms": 30000,
+              "retry_config": {
+                "max_retries": 4,
+                "initial_delay_ms": 1000,
+                "max_delay_ms": 30000,
+                "backoff_multiplier": 2.0,
+                "max_total_timeout_ms": 120000
+              }
+            }
+          },
+          "model": "kimi-k2-0711-preview"
+        },
+        "temperature": 1,
+        "max_tokens": 8192,
+        "system_prompt": "You are a helpful assistant.",
+        "title": "Moonshot Chat",
+        "mcp_servers": [
+          {
+            "actor": {
+              "manifest_path": "$CONFIG_DIR/fs.toml",
+              "init_state": {
+                "cwd": "$CWD"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
