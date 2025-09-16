@@ -228,7 +228,7 @@ impl Guest for Component {
             }
         };
 
-        let chat_state_id = match spawn(chat_state_manifest, Some(&init_bytes)) {
+        let chat_state_id = match spawn(chat_state_manifest, if init_bytes.is_empty() { None } else { Some(&init_bytes) }) {
             Ok(id) => {
                 log(&format!("Successfully spawned chat-state-proxy actor: {}", id));
 
