@@ -13,6 +13,7 @@ use bindings::theater::simple::runtime::log;
 use bindings::theater::simple::supervisor::spawn;
 use bindings::theater::simple::types::{ChannelAccept, ChannelId};
 use bindings::theater::simple::websocket_types::{MessageType, WebsocketMessage};
+use bindings::colinrozzi::genai_types::types::{Message, MessageContent, MessageRole};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -86,7 +87,7 @@ struct ChatMessage {
 enum ChatProxyRequest {
     StartChat,
     GetChatStateActorId,
-    AddMessage { message: ChatStateMessage },
+    AddMessage { message: Message },
     #[serde(rename = "get_metadata")]
     GetMetadata,
 }
@@ -102,20 +103,6 @@ enum ChatProxyResponse {
         conversation_id: String,
         store_id: String,
     },
-}
-
-// Simple message format for chat-state communication
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct ChatStateMessage {
-    pub role: String, // "user" or "assistant"
-    pub content: Vec<MessageContent>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type")]
-enum MessageContent {
-    #[serde(rename = "text")]
-    Text { text: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -459,15 +446,15 @@ fn handle_client_request(
                     chat_state_id
                 ));
 
-                // Create chat-state message format
-                let chat_state_message = ChatStateMessage {
-                    role: "user".to_string(),
-                    content: vec![MessageContent::Text { text: content }],
+                // Create genai-types message format
+                let genai_message = Message {
+                    role: MessageRole::User,
+                    content: vec![MessageContent::Text(content)],
                 };
 
                 // Send add_message request
                 let add_message_request = ChatProxyRequest::AddMessage {
-                    message: chat_state_message,
+                    message: genai_message,
                 };
 
                 let request_json = serde_json::to_string(&add_message_request)
