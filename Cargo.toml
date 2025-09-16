@@ -17,6 +17,8 @@ package = "component:front-chat"
 
 [package.metadata.component.target.dependencies]
 "theater:simple" = { path = "./wit/deps/theater-simple" }
+"colinrozzi:mcp-protocol" = { path = "./wit/deps/colinrozzi-mcp-protocol" }
+"colinrozzi:genai-types" = { path = "./wit/deps/colinrozzi-genai-types" }
 
 [package.metadata.component.bindings]
 derives = ["serde::Serialize", "serde::Deserialize", "PartialEq"]
