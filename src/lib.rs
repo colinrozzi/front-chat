@@ -7,7 +7,7 @@ use bindings::exports::theater::simple::message_server_client::Guest as MessageS
 use bindings::exports::theater::simple::supervisor_handlers::Guest as SupervisorHandlersGuest;
 use bindings::theater::simple::http_framework::{self, HandlerId, ServerId};
 use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, ServerConfig};
-use bindings::theater::simple::message_server_host::{open_channel, send};
+use bindings::theater::simple::message_server_host::open_channel;
 use bindings::theater::simple::random::generate_uuid;
 use bindings::theater::simple::runtime::log;
 use bindings::theater::simple::supervisor::spawn;
@@ -476,24 +476,38 @@ fn handle_client_request(
                 let request_json = serde_json::to_string(&add_message_request)
                     .map_err(|e| format!("Failed to serialize chat-state request: {}", e))?;
 
-                // Send message to chat-state actor
-                if let Err(e) = send(&chat_state_id, request_json.as_bytes()) {
-                    log(&format!("Failed to send add_message to chat-state-proxy: {}", e));
-                } else {
-                    log("Successfully sent add_message to chat-state-proxy");
+                // Send message to chat-state actor using request for proper response handling
+                match bindings::theater::simple::message_server_host::request(&chat_state_id, request_json.as_bytes()) {
+                    Ok(response_bytes) => {
+                        log("Successfully sent add_message to chat-state-proxy");
+                        
+                        // Parse response if needed
+                        if let Ok(response_str) = String::from_utf8(response_bytes) {
+                            log(&format!("Add message response: {}", response_str));
+                        }
 
-                    // Now request completion
-                    let completion_request = ChatStateRequest::GenerateCompletion;
-                    let completion_json = serde_json::to_string(&completion_request)
-                        .map_err(|e| format!("Failed to serialize completion request: {}", e))?;
+                        // Now request completion
+                        let completion_request = ChatStateRequest::GenerateCompletion;
+                        let completion_json = serde_json::to_string(&completion_request)
+                            .map_err(|e| format!("Failed to serialize completion request: {}", e))?;
 
-                    if let Err(e) = send(&chat_state_id, completion_json.as_bytes()) {
-                        log(&format!(
-                            "Failed to send generate_completion to chat-state-proxy: {}",
-                            e
-                        ));
-                    } else {
-                        log("Successfully sent generate_completion to chat-state-proxy");
+                        match bindings::theater::simple::message_server_host::request(&chat_state_id, completion_json.as_bytes()) {
+                            Ok(completion_response) => {
+                                log("Successfully sent generate_completion to chat-state-proxy");
+                                if let Ok(completion_str) = String::from_utf8(completion_response) {
+                                    log(&format!("Completion response: {}", completion_str));
+                                }
+                            }
+                            Err(e) => {
+                                log(&format!(
+                                    "Failed to send generate_completion to chat-state-proxy: {:?}",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!("Failed to send add_message to chat-state-proxy: {:?}", e));
                     }
                 }
             } else {
