@@ -136,9 +136,10 @@ struct ChatMessageEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(untagged)]
 enum MessageEntryVariant {
+    #[serde(rename = "Message")]
     Message(UserMessage),
+    #[serde(rename = "Completion")]
     Completion(CompletionMessage),
 }
 
@@ -545,7 +546,12 @@ impl HttpHandlersGuest for Component {
         ));
 
         // Remove connection from active connections
-        state.active_connections.remove(&connection_id);
+        let was_connected = state.active_connections.remove(&connection_id).is_some();
+        
+        log(&format!(
+            "Connection {} removed: {}, remaining connections: {}", 
+            connection_id, was_connected, state.active_connections.len()
+        ));
 
         Ok((Some(set_state(&state)),))
     }
