@@ -1,0 +1,26 @@
+{
+  "actor": {
+    "manifest_path": "/Users/colinrozzi/work/actor-registry/chat-state-proxy/manifest.toml",
+    "initial_state": {
+      "config": {
+        "model_proxy": {
+          "manifest_path": "/Users/colinrozzi/work/actor-registry/anthropic-proxy/manifest.toml",
+          "init_state": {
+            "store_id": null,
+            "config": {
+              "api_key_env": "ANTHROPIC_API_KEY",
+              "base_url": "https://api.anthropic.com/v1",
+              "timeout_ms": 30000
+            }
+          },
+          "model": "claude-3-5-sonnet-20241022"
+        },
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "system_prompt": "You are Claude, an AI assistant created by Anthropic. You are helpful, harmless, and honest.",
+        "title": "🤖 Dynamic Front-Chat + Claude",
+        "mcp_servers": []
+      }
+    }
+  }
+}
