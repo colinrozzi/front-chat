@@ -54,7 +54,7 @@ struct ClientSettings {
     model: Option<String>,
 }
 
-// Server response protocol
+// Server response protocol with enhanced tool support
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 enum ServerResponse {
@@ -67,10 +67,41 @@ enum ServerResponse {
         messages: Vec<ChatMessage>,
         conversation_id: String,
     },
+    #[serde(rename = "tool_execution_update")]
+    ToolExecutionUpdate {
+        tool_use_id: String,
+        status: ToolStatus,
+        partial_result: Option<Value>,
+    },
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "connected")]
     Connected { conversation_id: String },
+}
+
+// Rich tool use display structures
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RichToolUse {
+    pub id: String,
+    pub name: String,
+    pub input: Value, // Parsed JSON for rich display
+    pub status: ToolStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RichToolResult {
+    pub tool_use_id: String,
+    pub content: Value, // Parsed JSON content
+    pub is_error: bool,
+    pub execution_time_ms: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum ToolStatus {
+    Pending,
+    Executing,
+    Completed,
+    Error,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -82,8 +113,11 @@ struct ChatMessage {
     timestamp: u64,
     finished: Option<bool>,
     
-    // Convenience fields for simple UI display
+    // Enhanced display fields
     display_text: String,                 // Flattened text for simple rendering
+    tool_uses: Vec<RichToolUse>,         // Parsed tool uses
+    tool_results: Vec<RichToolResult>,   // Parsed tool results
+    has_tools: bool,                     // Whether this message contains tools
 }
 
 // Chat-state-proxy actor message protocol
@@ -186,6 +220,34 @@ fn get_state(state_bytes: &Option<Vec<u8>>) -> Result<FrontChatState, String> {
 
 fn set_state(state: &FrontChatState) -> Vec<u8> {
     serde_json::to_vec(state).unwrap_or_default()
+}
+
+// --- Enhanced Chat Message Helper ---
+
+// Create enhanced chat message with tool parsing
+fn create_enhanced_chat_message(
+    id: String,
+    parent_id: Option<String>,
+    role: String,
+    content: Vec<MessageContent>,
+    timestamp: u64,
+    finished: Option<bool>,
+) -> ChatMessage {
+    let (display_text, tool_uses, tool_results) = extract_enhanced_content(&content);
+    let has_tools = !tool_uses.is_empty() || !tool_results.is_empty();
+    
+    ChatMessage {
+        id,
+        parent_id,
+        role,
+        content,
+        timestamp,
+        finished,
+        display_text,
+        tool_uses,
+        tool_results,
+        has_tools,
+    }
 }
 
 // --- Helper Functions ---
@@ -656,38 +718,38 @@ fn convert_chat_state_messages_to_client(messages: &[Value]) -> Result<Vec<ChatM
                         if let Some(role) = message_data.get("role").and_then(|r| r.as_str()) {
                             if let Some(content_array) = message_data.get("content").and_then(|c| c.as_array()) {
                                 let rich_content = parse_content_array(content_array)?;
-                                let display_text = extract_text_from_content_array(content_array);
+                                let _display_text = extract_text_from_content_array(content_array);
                                 
-                                client_messages.push(ChatMessage {
+                                let enhanced_message = create_enhanced_chat_message(
                                     id,
                                     parent_id,
-                                    role: role.to_lowercase(),
-                                    content: rich_content,
-                                    timestamp: 0, // TODO: Add actual timestamp
-                                    finished: Some(true),
-                                    display_text,
-                                });
+                                    role.to_lowercase(),
+                                    rich_content,
+                                    0, // TODO: Add actual timestamp
+                                    Some(true),
+                                );
+                                client_messages.push(enhanced_message);
                             }
                         }
                     } else if let Some(completion_data) = entry_obj.get("Completion") {
                         // This is an assistant completion
                         if let Some(content_array) = completion_data.get("content").and_then(|c| c.as_array()) {
                             let rich_content = parse_content_array(content_array)?;
-                            let display_text = extract_text_from_content_array(content_array);
+                            let _display_text = extract_text_from_content_array(content_array);
                             let stop_reason = completion_data
                                 .get("stop_reason")
                                 .and_then(|s| s.as_str())
                                 .unwrap_or("EndTurn");
                             
-                            client_messages.push(ChatMessage {
+                            let enhanced_message = create_enhanced_chat_message(
                                 id,
                                 parent_id,
-                                role: "assistant".to_string(),
-                                content: rich_content,
-                                timestamp: 0, // TODO: Add actual timestamp
-                                finished: Some(stop_reason == "EndTurn"),
-                                display_text,
-                            });
+                                "assistant".to_string(),
+                                rich_content,
+                                0, // TODO: Add actual timestamp
+                                Some(stop_reason == "EndTurn"),
+                            );
+                            client_messages.push(enhanced_message);
                         }
                     }
                 }
@@ -716,20 +778,92 @@ fn parse_content_array(content_array: &[Value]) -> Result<Vec<MessageContent>, S
                 }
             }
             
-            // Handle tool use
-            if let Some(_tool_use_value) = content_obj.get("ToolUse") {
-                log(&format!("🔧 Item {}: Tool Use", i));
-                // For now, create a placeholder - in full implementation would parse the ToolUse structure
-                parsed_content.push(MessageContent::Text("[Tool Use]".to_string()));
-                continue;
+            // Handle enhanced tool use parsing
+            if let Some(tool_use_value) = content_obj.get("ToolUse") {
+                if let Some(tool_use_obj) = tool_use_value.as_object() {
+                    log(&format!("🔧 Item {}: Enhanced Tool Use parsing", i));
+                    
+                    let id = tool_use_obj.get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    
+                    let name = tool_use_obj.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown_tool")
+                        .to_string();
+                    
+                    let default_input = Value::Object(serde_json::Map::new());
+                    let input_json = tool_use_obj.get("input")
+                        .unwrap_or(&default_input);
+                    
+                    // Convert input to JsonData (Vec<u8>)
+                    match serde_json::to_vec(input_json) {
+                        Ok(input_bytes) => {
+                            let tool_use = bindings::colinrozzi::genai_types::types::ToolUse {
+                                id,
+                                name,
+                                input: input_bytes,
+                            };
+                            
+                            parsed_content.push(MessageContent::ToolUse(tool_use));
+                            continue;
+                        }
+                        Err(e) => {
+                            log(&format!("⚠️ Failed to serialize tool input: {}", e));
+                            parsed_content.push(MessageContent::Text("[Invalid Tool Use]".to_string()));
+                            continue;
+                        }
+                    }
+                } else {
+                    log(&format!("⚠️ Tool use value is not an object"));
+                    parsed_content.push(MessageContent::Text("[Tool Use]".to_string()));
+                    continue;
+                }
             }
             
-            // Handle tool result
-            if let Some(_tool_result_value) = content_obj.get("ToolResult") {
-                log(&format!("📊 Item {}: Tool Result", i));
-                // For now, create a placeholder - in full implementation would parse the ToolResult structure
-                parsed_content.push(MessageContent::Text("[Tool Result]".to_string()));
-                continue;
+            // Handle enhanced tool result parsing
+            if let Some(tool_result_value) = content_obj.get("ToolResult") {
+                if let Some(tool_result_obj) = tool_result_value.as_object() {
+                    log(&format!("📊 Item {}: Enhanced Tool Result parsing", i));
+                    
+                    let tool_use_id = tool_result_obj.get("tool_use_id")
+                        .or_else(|| tool_result_obj.get("tool-use-id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    
+                    let content_json = tool_result_obj.get("content")
+                        .unwrap_or(&Value::Null);
+                    
+                    let is_error = tool_result_obj.get("is_error")
+                        .or_else(|| tool_result_obj.get("is-error"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    
+                    // Convert content to JsonData (Vec<u8>)
+                    match serde_json::to_vec(content_json) {
+                        Ok(content_bytes) => {
+                            let tool_result = bindings::colinrozzi::genai_types::types::ToolResult {
+                                tool_use_id,
+                                content: content_bytes,
+                                is_error,
+                            };
+                            
+                            parsed_content.push(MessageContent::ToolResult(tool_result));
+                            continue;
+                        }
+                        Err(e) => {
+                            log(&format!("⚠️ Failed to serialize tool result content: {}", e));
+                            parsed_content.push(MessageContent::Text("[Invalid Tool Result]".to_string()));
+                            continue;
+                        }
+                    }
+                } else {
+                    log(&format!("⚠️ Tool result value is not an object"));
+                    parsed_content.push(MessageContent::Text("[Tool Result]".to_string()));
+                    continue;
+                }
             }
             
             log(&format!("⚠️ Unknown content type in item {}: {:?}", i, content_obj.keys().collect::<Vec<_>>()));
@@ -786,15 +920,14 @@ fn handle_client_request(
             log(&format!("Processing send_message: {}", content));
 
             // Create user message for display with rich structure
-            let user_message = ChatMessage {
-                id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
-                parent_id: None, // Will be set properly when we get the real message from chat-state
-                role: "user".to_string(),
-                content: vec![MessageContent::Text(content.clone())],
-                timestamp: 0, // TODO: Get actual timestamp
-                finished: Some(true),
-                display_text: content.clone(),
-            };
+            let user_message = create_enhanced_chat_message(
+                generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
+                None, // Will be set properly when we get the real message from chat-state
+                "user".to_string(),
+                vec![MessageContent::Text(content.clone())],
+                0, // TODO: Get actual timestamp
+                Some(true),
+            );
 
             // Broadcast user message immediately
             let user_response = ServerResponse::MessageAdded {
@@ -851,16 +984,15 @@ fn handle_client_request(
 
                 // Fallback: create a simple response with rich structure
                 let fallback_text = "Chat-state-proxy actor not available. Please try again.".to_string();
-                let assistant_message = ChatMessage {
-                    id: generate_uuid()
+                let assistant_message = create_enhanced_chat_message(
+                    generate_uuid()
                         .map_err(|e| format!("Failed to generate message ID: {}", e))?,
-                    parent_id: None,
-                    role: "assistant".to_string(),
-                    content: vec![MessageContent::Text(fallback_text.clone())],
-                    timestamp: 0,
-                    finished: Some(true),
-                    display_text: fallback_text,
-                };
+                    None,
+                    "assistant".to_string(),
+                    vec![MessageContent::Text(fallback_text.clone())],
+                    0,
+                    Some(true),
+                );
 
                 let assistant_response = ServerResponse::MessageAdded {
                     message: assistant_message,
@@ -1210,29 +1342,25 @@ fn handle_chat_message_update(
     let display_message = match chat_message.entry {
         MessageEntryVariant::Message(user_msg) => {
             log(&format!("User message: {:?}", user_msg));
-            let display_text = extract_text_content(&user_msg.content);
-            ChatMessage {
-                id: chat_message.id,
-                parent_id: chat_message.parent_id,
-                role: user_msg.role.to_lowercase(), // Convert "User" -> "user"
-                content: user_msg.content,
-                timestamp: 0, // TODO: Add actual timestamp
-                finished: Some(true),
-                display_text,
-            }
+            create_enhanced_chat_message(
+                chat_message.id,
+                chat_message.parent_id,
+                user_msg.role.to_lowercase(), // Convert "User" -> "user"
+                user_msg.content,
+                0, // TODO: Add actual timestamp
+                Some(true),
+            )
         }
         MessageEntryVariant::Completion(completion) => {
             log(&format!("Assistant completion: {}", completion.model));
-            let display_text = extract_text_content(&completion.content);
-            ChatMessage {
-                id: chat_message.id,
-                parent_id: chat_message.parent_id,
-                role: "assistant".to_string(),
-                content: completion.content,
-                timestamp: 0, // TODO: Add actual timestamp
-                finished: Some(completion.stop_reason == "EndTurn"),
-                display_text,
-            }
+            create_enhanced_chat_message(
+                chat_message.id,
+                chat_message.parent_id,
+                "assistant".to_string(),
+                completion.content,
+                0, // TODO: Add actual timestamp
+                Some(completion.stop_reason == "EndTurn"),
+            )
         }
     };
     
@@ -1268,31 +1396,126 @@ fn handle_chat_message_update(
     Ok(())
 }
 
-fn extract_text_content(content: &[MessageContent]) -> String {
-    let extracted: Vec<String> = content
-        .iter()
-        .enumerate()
-        .filter_map(|(i, c)| {
-            match c {
-                MessageContent::Text(text) => {
-                    log(&format!("📝 Item {}: Text content: '{}'", i, text));
-                    Some(text.clone())
-                }
-                MessageContent::ToolUse(_) => {
-                    log(&format!("🔧 Item {}: Tool Use", i));
-                    Some("[Tool Use]".to_string())
-                }
-                MessageContent::ToolResult(_) => {
-                    log(&format!("📊 Item {}: Tool Result", i));
-                    Some("[Tool Result]".to_string())
-                }
-            }
-        })
-        .collect();
+// Parse JsonData (Vec<u8>) into serde_json::Value
+fn parse_json_data(json_data: &[u8]) -> Result<Value, String> {
+    let json_str = std::str::from_utf8(json_data)
+        .map_err(|e| format!("Invalid UTF-8 in JSON data: {}", e))?;
     
-    let result = extracted.join(" ");
-    log(&format!("✅ Extracted text content: '{}'", result));
-    result
+    serde_json::from_str(json_str)
+        .map_err(|e| format!("Invalid JSON: {}", e))
+}
+
+// Format tool result for preview text
+fn format_tool_result_preview(content: &Value) -> String {
+    match content {
+        Value::String(s) => {
+            if s.len() > 100 {
+                format!("{}...", &s[..97])
+            } else {
+                s.clone()
+            }
+        }
+        Value::Object(obj) => {
+            if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                if text.len() > 100 {
+                    format!("{}...", &text[..97])
+                } else {
+                    text.to_string()
+                }
+            } else if let Some(content) = obj.get("content").and_then(|v| v.as_str()) {
+                if content.len() > 100 {
+                    format!("{}...", &content[..97])
+                } else {
+                    content.to_string()
+                }
+            } else {
+                format!("Object with {} fields", obj.len())
+            }
+        }
+        Value::Array(arr) => {
+            format!("Array with {} items", arr.len())
+        }
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+    }
+}
+
+// Enhanced text extraction with proper tool parsing
+fn extract_enhanced_content(content: &[MessageContent]) -> (String, Vec<RichToolUse>, Vec<RichToolResult>) {
+    let mut extracted_text: Vec<String> = Vec::new();
+    let mut tool_uses: Vec<RichToolUse> = Vec::new();
+    let mut tool_results: Vec<RichToolResult> = Vec::new();
+    
+    for (i, content_item) in content.iter().enumerate() {
+        match content_item {
+            MessageContent::Text(text) => {
+                log(&format!("📝 Item {}: Text content: '{}'", i, text));
+                extracted_text.push(text.clone());
+            }
+            MessageContent::ToolUse(tool_use) => {
+                log(&format!("🔧 Item {}: Tool Use - {} ({})", i, tool_use.name, tool_use.id));
+                
+                // Parse the JsonData input
+                let parsed_input = match parse_json_data(&tool_use.input) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        log(&format!("⚠️ Failed to parse tool use input: {}", e));
+                        Value::Object(serde_json::Map::new())
+                    }
+                };
+                
+                let rich_tool_use = RichToolUse {
+                    id: tool_use.id.clone(),
+                    name: tool_use.name.clone(),
+                    input: parsed_input,
+                    status: ToolStatus::Pending,
+                };
+                
+                tool_uses.push(rich_tool_use);
+                
+                // Add readable text representation
+                extracted_text.push(format!("🔧 **Tool Call**: {}", tool_use.name));
+            }
+            MessageContent::ToolResult(tool_result) => {
+                log(&format!("📊 Item {}: Tool Result for tool {}", i, tool_result.tool_use_id));
+                
+                // Parse the JsonData content
+                let parsed_content = match parse_json_data(&tool_result.content) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        log(&format!("⚠️ Failed to parse tool result content: {}", e));
+                        Value::String(format!("Error parsing result: {}", e))
+                    }
+                };
+                
+                let rich_tool_result = RichToolResult {
+                    tool_use_id: tool_result.tool_use_id.clone(),
+                    content: parsed_content.clone(),
+                    is_error: tool_result.is_error,
+                    execution_time_ms: None, // Could be extracted from metadata if available
+                };
+                
+                tool_results.push(rich_tool_result);
+                
+                // Add readable text representation
+                let status_emoji = if tool_result.is_error { "❌" } else { "✅" };
+                let content_preview = format_tool_result_preview(&parsed_content);
+                extracted_text.push(format!("{} **Tool Result**: {}", status_emoji, content_preview));
+            }
+        }
+    }
+    
+    let combined_text = extracted_text.join("\n");
+    log(&format!("✅ Enhanced extraction complete: {} tools, {} results", tool_uses.len(), tool_results.len()));
+    
+    (combined_text, tool_uses, tool_results)
+}
+
+// Legacy function for backward compatibility
+fn extract_text_content(content: &[MessageContent]) -> String {
+    let (text, _, _) = extract_enhanced_content(content);
+    text
 }
 
 // Handle responses from chat-state-proxy actor
