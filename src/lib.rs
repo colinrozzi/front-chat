@@ -75,11 +75,15 @@ enum ServerResponse {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct ChatMessage {
-    id: String,
-    role: String, // "user" or "assistant"
-    content: String,
+    id: String,                           // Content hash
+    parent_id: Option<String>,            // Parent message hash
+    role: String,                         // "user" or "assistant"
+    content: Vec<MessageContent>,         // Rich content (text, tool use, etc.)
     timestamp: u64,
     finished: Option<bool>,
+    
+    // Convenience fields for simple UI display
+    display_text: String,                 // Flattened text for simple rendering
 }
 
 // Chat-state-proxy actor message protocol
@@ -624,19 +628,24 @@ impl HttpHandlersGuest for Component {
 
 // --- Message Conversion Functions ---
 
-// Convert chat-state messages to client message format
+// Convert chat-state messages to client message format with full structure preserved
 fn convert_chat_state_messages_to_client(messages: &[Value]) -> Result<Vec<ChatMessage>, String> {
     let mut client_messages = Vec::new();
     
     for (i, message_value) in messages.iter().enumerate() {
         log(&format!("🔄 Converting message {}: {:?}", i, message_value));
         
-        // Parse the chat-state message
+        // Parse the chat-state message structure
         let id = message_value
             .get("id")
             .and_then(|v| v.as_str())
             .unwrap_or(&format!("msg_{}", i))
             .to_string();
+            
+        let parent_id = message_value
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
             
         if let Some(entry) = message_value.get("entry") {
             match entry {
@@ -646,21 +655,25 @@ fn convert_chat_state_messages_to_client(messages: &[Value]) -> Result<Vec<ChatM
                         // This is a user message
                         if let Some(role) = message_data.get("role").and_then(|r| r.as_str()) {
                             if let Some(content_array) = message_data.get("content").and_then(|c| c.as_array()) {
-                                let content = extract_text_from_content_array(content_array);
+                                let rich_content = parse_content_array(content_array)?;
+                                let display_text = extract_text_from_content_array(content_array);
                                 
                                 client_messages.push(ChatMessage {
                                     id,
+                                    parent_id,
                                     role: role.to_lowercase(),
-                                    content,
+                                    content: rich_content,
                                     timestamp: 0, // TODO: Add actual timestamp
                                     finished: Some(true),
+                                    display_text,
                                 });
                             }
                         }
                     } else if let Some(completion_data) = entry_obj.get("Completion") {
                         // This is an assistant completion
                         if let Some(content_array) = completion_data.get("content").and_then(|c| c.as_array()) {
-                            let content = extract_text_from_content_array(content_array);
+                            let rich_content = parse_content_array(content_array)?;
+                            let display_text = extract_text_from_content_array(content_array);
                             let stop_reason = completion_data
                                 .get("stop_reason")
                                 .and_then(|s| s.as_str())
@@ -668,10 +681,12 @@ fn convert_chat_state_messages_to_client(messages: &[Value]) -> Result<Vec<ChatM
                             
                             client_messages.push(ChatMessage {
                                 id,
+                                parent_id,
                                 role: "assistant".to_string(),
-                                content,
+                                content: rich_content,
                                 timestamp: 0, // TODO: Add actual timestamp
                                 finished: Some(stop_reason == "EndTurn"),
+                                display_text,
                             });
                         }
                     }
@@ -683,11 +698,48 @@ fn convert_chat_state_messages_to_client(messages: &[Value]) -> Result<Vec<ChatM
         }
     }
     
-    log(&format!("✅ Converted {} messages to client format", client_messages.len()));
+    log(&format!("✅ Converted {} messages to client format with full structure", client_messages.len()));
     Ok(client_messages)
 }
 
-// Extract text content from content array (similar to extract_text_content but for JSON values)
+// Parse rich content array into MessageContent types
+fn parse_content_array(content_array: &[Value]) -> Result<Vec<MessageContent>, String> {
+    let mut parsed_content = Vec::new();
+    
+    for (i, content_item) in content_array.iter().enumerate() {
+        if let Some(content_obj) = content_item.as_object() {
+            if let Some(text_value) = content_obj.get("Text") {
+                if let Some(text) = text_value.as_str() {
+                    log(&format!("📝 Item {}: Text content: '{}'", i, text));
+                    parsed_content.push(MessageContent::Text(text.to_string()));
+                    continue;
+                }
+            }
+            
+            // Handle tool use
+            if let Some(_tool_use_value) = content_obj.get("ToolUse") {
+                log(&format!("🔧 Item {}: Tool Use", i));
+                // For now, create a placeholder - in full implementation would parse the ToolUse structure
+                parsed_content.push(MessageContent::Text("[Tool Use]".to_string()));
+                continue;
+            }
+            
+            // Handle tool result
+            if let Some(_tool_result_value) = content_obj.get("ToolResult") {
+                log(&format!("📊 Item {}: Tool Result", i));
+                // For now, create a placeholder - in full implementation would parse the ToolResult structure
+                parsed_content.push(MessageContent::Text("[Tool Result]".to_string()));
+                continue;
+            }
+            
+            log(&format!("⚠️ Unknown content type in item {}: {:?}", i, content_obj.keys().collect::<Vec<_>>()));
+        }
+    }
+    
+    Ok(parsed_content)
+}
+
+// Extract text content from content array (for display_text field)
 fn extract_text_from_content_array(content_array: &[Value]) -> String {
     let extracted: Vec<String> = content_array
         .iter()
@@ -714,7 +766,11 @@ fn extract_text_from_content_array(content_array: &[Value]) -> String {
         })
         .collect();
     
-    let result = extracted.join(" ");
+    let result = if extracted.is_empty() {
+        "[No displayable content]".to_string()
+    } else {
+        extracted.join(" ")
+    };
     log(&format!("✅ Extracted text from array: '{}'", result));
     result
 }
@@ -729,13 +785,15 @@ fn handle_client_request(
         ClientRequest::SendMessage { content } => {
             log(&format!("Processing send_message: {}", content));
 
-            // Create user message for display
+            // Create user message for display with rich structure
             let user_message = ChatMessage {
                 id: generate_uuid().map_err(|e| format!("Failed to generate message ID: {}", e))?,
+                parent_id: None, // Will be set properly when we get the real message from chat-state
                 role: "user".to_string(),
-                content: content.clone(),
+                content: vec![MessageContent::Text(content.clone())],
                 timestamp: 0, // TODO: Get actual timestamp
                 finished: Some(true),
+                display_text: content.clone(),
             };
 
             // Broadcast user message immediately
@@ -791,14 +849,17 @@ fn handle_client_request(
             } else {
                 log("No chat-state-proxy actor available, creating fallback response");
 
-                // Fallback: create a simple response
+                // Fallback: create a simple response with rich structure
+                let fallback_text = "Chat-state-proxy actor not available. Please try again.".to_string();
                 let assistant_message = ChatMessage {
                     id: generate_uuid()
                         .map_err(|e| format!("Failed to generate message ID: {}", e))?,
+                    parent_id: None,
                     role: "assistant".to_string(),
-                    content: "Chat-state-proxy actor not available. Please try again.".to_string(),
+                    content: vec![MessageContent::Text(fallback_text.clone())],
                     timestamp: 0,
                     finished: Some(true),
+                    display_text: fallback_text,
                 };
 
                 let assistant_response = ServerResponse::MessageAdded {
@@ -1149,22 +1210,28 @@ fn handle_chat_message_update(
     let display_message = match chat_message.entry {
         MessageEntryVariant::Message(user_msg) => {
             log(&format!("User message: {:?}", user_msg));
+            let display_text = extract_text_content(&user_msg.content);
             ChatMessage {
                 id: chat_message.id,
+                parent_id: chat_message.parent_id,
                 role: user_msg.role.to_lowercase(), // Convert "User" -> "user"
-                content: extract_text_content(&user_msg.content),
+                content: user_msg.content,
                 timestamp: 0, // TODO: Add actual timestamp
                 finished: Some(true),
+                display_text,
             }
         }
         MessageEntryVariant::Completion(completion) => {
             log(&format!("Assistant completion: {}", completion.model));
+            let display_text = extract_text_content(&completion.content);
             ChatMessage {
                 id: chat_message.id,
+                parent_id: chat_message.parent_id,
                 role: "assistant".to_string(),
-                content: extract_text_content(&completion.content),
+                content: completion.content,
                 timestamp: 0, // TODO: Add actual timestamp
                 finished: Some(completion.stop_reason == "EndTurn"),
+                display_text,
             }
         }
     };
