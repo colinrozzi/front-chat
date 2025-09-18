@@ -80,43 +80,12 @@
             align-items: center;
             gap: 0.5rem;
             margin-bottom: 0.5rem;
+            justify-content: flex-end;
         }
 
-        .message-avatar {
-            width: 1.5rem;
-            height: 1.5rem;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 600;
-            font-size: 0.75rem;
-            flex-shrink: 0;
-        }
+        /* Avatar styles removed - focusing on content addresses */
 
-        .message.user .message-avatar {
-            background: #3b82f6;
-            color: white;
-        }
-
-        .message.assistant .message-avatar {
-            background: #8b5cf6;
-            color: white;
-        }
-
-        .message-role {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: #374151;
-        }
-
-        .message.user .message-role {
-            color: #3b82f6;
-        }
-
-        .message.assistant .message-role {
-            color: #8b5cf6;
-        }
+        /* Role labels removed - color coding provides clear distinction */
 
         .message-content {
             background: white;
@@ -138,12 +107,7 @@
             background: white;
         }
 
-        .message-time {
-            font-size: 0.75rem;
-            color: #64748b;
-            margin-left: auto;
-            font-weight: 400;
-        }
+        /* Time display removed - focusing on content addresses */
         
         .message-hash {
             font-family: 'Monaco', 'Menlo', 'SF Mono', 'Consolas', monospace;
@@ -351,14 +315,6 @@
         </div>
 
         <div class="typing-indicator" id="typingIndicator">
-            <div class="message-header">
-                <div class="message-avatar" style="background: #8b5cf6; color: white;">
-                    AI
-                </div>
-                <div class="message-role" style="color: #8b5cf6;">
-                    Assistant
-                </div>
-            </div>
             <div class="typing-content">
                 <span style="color: #64748b; font-size: 0.875rem;">AI is typing</span>
                 <div class="typing-dots">
@@ -599,17 +555,9 @@
                 messageDiv.className = `message ${message.role}`;
                 messageDiv.setAttribute('data-message-id', message.id);
                 
-                // Create message header with avatar and role
+                // Create message header with just content addresses
                 const headerDiv = document.createElement('div');
                 headerDiv.className = 'message-header';
-                
-                const avatar = document.createElement('div');
-                avatar.className = 'message-avatar';
-                avatar.textContent = message.role === 'user' ? 'You' : 'AI';
-                
-                const roleLabel = document.createElement('div');
-                roleLabel.className = 'message-role';
-                roleLabel.textContent = message.role === 'user' ? 'You' : 'Assistant';
                 
                 // Add parent link if exists
                 if (message.parent_id) {
@@ -621,10 +569,6 @@
                     headerDiv.appendChild(parentLink);
                 }
                 
-                const timeDiv = document.createElement('div');
-                timeDiv.className = 'message-time';
-                timeDiv.textContent = this.formatTimestamp(message.timestamp);
-                
                 // Add message hash
                 const hashDiv = document.createElement('div');
                 hashDiv.className = 'message-hash';
@@ -632,9 +576,6 @@
                 hashDiv.title = `Message Hash: ${message.id} (click to copy)`;
                 hashDiv.onclick = () => this.copyToClipboard(message.id, hashDiv);
                 
-                headerDiv.appendChild(avatar);
-                headerDiv.appendChild(roleLabel);
-                headerDiv.appendChild(timeDiv);
                 headerDiv.appendChild(hashDiv);
                 
                 // Create message content
