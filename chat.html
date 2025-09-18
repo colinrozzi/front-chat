@@ -521,7 +521,18 @@
                 
                 const messageContent = document.createElement('div');
                 messageContent.className = 'message-content';
-                messageContent.textContent = message.content;
+                
+                // Use display_text for simple rendering, but preserve rich content for future features
+                const displayText = message.display_text || message.content || '[No content]';
+                messageContent.textContent = displayText;
+                
+                // Store rich content as data attribute for future use
+                if (message.content && Array.isArray(message.content)) {
+                    messageContent.setAttribute('data-rich-content', JSON.stringify(message.content));
+                }
+                if (message.parent_id) {
+                    messageContent.setAttribute('data-parent-id', message.parent_id);
+                }
                 
                 const timeDiv = document.createElement('div');
                 timeDiv.className = 'message-time';
