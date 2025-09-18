@@ -1,0 +1,15 @@
+name = "fs-mcp"
+version = "0.1.0"
+component = "/Users/colinrozzi/work/actor-registry/fs-mcp/./target/wasm32-unknown-unknown/release/fs_mcp.wasm"
+description = "Theater-native filesystem MCP actor"
+
+[[handler]]
+type = "message-server"
+
+[[handler]]
+type = "runtime"
+
+[[handler]]
+type = "filesystem"
+path = "/Users/colinrozzi/work/tmp/chat"
+allowed_commands = ["ls", "cat", "echo"]

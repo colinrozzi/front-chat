@@ -29,7 +29,13 @@
         "max_tokens": 8192,
         "system_prompt": "You are a helpful assistant.",
         "title": "Moonshot Chat",
-        "mcp_servers": []
+        "mcp_servers": [
+          {
+            "actor": {
+              "manifest_path": "/Users/colinrozzi/work/actor-registry/front-chat/configs/manifests/fs.toml"
+            }
+          }
+        ]
       }
     }
   }
