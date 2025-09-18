@@ -69,24 +69,28 @@
         }
 
         .message {
-            margin-bottom: 1rem;
+            margin-bottom: 1.5rem;
             display: flex;
-            gap: 0.75rem;
+            flex-direction: column;
+            gap: 0.5rem;
         }
 
-        .message.user {
-            flex-direction: row-reverse;
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
         }
 
         .message-avatar {
-            width: 2rem;
-            height: 2rem;
+            width: 1.5rem;
+            height: 1.5rem;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 600;
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             flex-shrink: 0;
         }
 
@@ -100,30 +104,45 @@
             color: white;
         }
 
+        .message-role {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .message.user .message-role {
+            color: #3b82f6;
+        }
+
+        .message.assistant .message-role {
+            color: #8b5cf6;
+        }
+
         .message-content {
-            max-width: 70%;
-            padding: 0.75rem 1rem;
-            border-radius: 1rem;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.75rem;
+            padding: 1rem 1.25rem;
             word-wrap: break-word;
+            line-height: 1.6;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
         }
 
         .message.user .message-content {
-            background: #3b82f6;
-            color: white;
-            border-bottom-right-radius: 0.25rem;
+            border-left: 3px solid #3b82f6;
+            background: #f8fafc;
         }
 
         .message.assistant .message-content {
+            border-left: 3px solid #8b5cf6;
             background: white;
-            color: #1e293b;
-            border: 1px solid #e2e8f0;
-            border-bottom-left-radius: 0.25rem;
         }
 
         .message-time {
             font-size: 0.75rem;
             color: #64748b;
-            margin-top: 0.25rem;
+            margin-left: auto;
+            font-weight: 400;
         }
 
         .input-area {
@@ -177,14 +196,28 @@
 
         .typing-indicator {
             display: none;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .typing-indicator .message-header {
+            display: flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.75rem 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .typing-indicator .typing-content {
             background: white;
             border: 1px solid #e2e8f0;
-            border-radius: 1rem;
-            margin-bottom: 1rem;
-            max-width: 70%;
+            border-left: 3px solid #8b5cf6;
+            border-radius: 0.75rem;
+            padding: 1rem 1.25rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
         }
 
         .typing-indicator.show {
@@ -270,10 +303,15 @@
         </div>
 
         <div class="typing-indicator" id="typingIndicator">
-            <div class="message-avatar">
-                AI
+            <div class="message-header">
+                <div class="message-avatar" style="background: #8b5cf6; color: white;">
+                    AI
+                </div>
+                <div class="message-role" style="color: #8b5cf6;">
+                    Assistant
+                </div>
             </div>
-            <div>
+            <div class="typing-content">
                 <span style="color: #64748b; font-size: 0.875rem;">AI is typing</span>
                 <div class="typing-dots">
                     <div class="typing-dot"></div>
@@ -513,12 +551,27 @@
                 messageDiv.className = `message ${message.role}`;
                 messageDiv.setAttribute('data-message-id', message.id);
                 
+                // Create message header with avatar and role
+                const headerDiv = document.createElement('div');
+                headerDiv.className = 'message-header';
+                
                 const avatar = document.createElement('div');
                 avatar.className = 'message-avatar';
                 avatar.textContent = message.role === 'user' ? 'You' : 'AI';
                 
-                const contentDiv = document.createElement('div');
+                const roleLabel = document.createElement('div');
+                roleLabel.className = 'message-role';
+                roleLabel.textContent = message.role === 'user' ? 'You' : 'Assistant';
                 
+                const timeDiv = document.createElement('div');
+                timeDiv.className = 'message-time';
+                timeDiv.textContent = this.formatTimestamp(message.timestamp);
+                
+                headerDiv.appendChild(avatar);
+                headerDiv.appendChild(roleLabel);
+                headerDiv.appendChild(timeDiv);
+                
+                // Create message content
                 const messageContent = document.createElement('div');
                 messageContent.className = 'message-content';
                 
@@ -534,15 +587,8 @@
                     messageContent.setAttribute('data-parent-id', message.parent_id);
                 }
                 
-                const timeDiv = document.createElement('div');
-                timeDiv.className = 'message-time';
-                timeDiv.textContent = this.formatTimestamp(message.timestamp);
-                
-                contentDiv.appendChild(messageContent);
-                contentDiv.appendChild(timeDiv);
-                
-                messageDiv.appendChild(avatar);
-                messageDiv.appendChild(contentDiv);
+                messageDiv.appendChild(headerDiv);
+                messageDiv.appendChild(messageContent);
                 
                 this.messagesContainer.appendChild(messageDiv);
                 
