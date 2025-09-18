@@ -1587,18 +1587,24 @@ fn handle_chat_message_update(
             
             for connection_id in state.active_connections.keys() {
                 log(&format!("Sending separated message to connection: {}", connection_id));
-                if let Ok(ws_message) = create_websocket_message(&server_response) {
-                    if let Err(e) = http_framework::send_websocket_message(
-                        state.server_id,
-                        *connection_id,
-                        &ws_message,
-                    ) {
-                        log(&format!(
-                            "Failed to send separated message to connection {}: {}",
-                            connection_id, e
-                        ));
-                    } else {
-                        log(&format!("Successfully sent separated message to connection {}", connection_id));
+                match create_websocket_message(&server_response) {
+                    Ok(ws_message) => {
+                        log(&format!("Created WebSocket message for separated message"));
+                        if let Err(e) = http_framework::send_websocket_message(
+                            state.server_id,
+                            *connection_id,
+                            &ws_message,
+                        ) {
+                            log(&format!(
+                                "Failed to send separated message to connection {}: {}",
+                                connection_id, e
+                            ));
+                        } else {
+                            log(&format!("Successfully sent separated message to connection {}", connection_id));
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!("Failed to create WebSocket message for separated message: {}", e));
                     }
                 }
             }
