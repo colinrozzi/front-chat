@@ -1558,7 +1558,7 @@ fn handle_chat_message_update(
     };
     
     if should_separate_tools {
-        log("Creating separated tool messages");
+        log(&format!("Creating separated tool messages for message ID: {}", chat_message.id));
         
         let messages = match chat_message.entry {
             MessageEntryVariant::Completion(completion) => {
