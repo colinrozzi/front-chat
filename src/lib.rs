@@ -221,6 +221,260 @@ struct TokenUsage {
     output_tokens: u32,
 }
 
+// --- Flexible Channel Message Parsing ---
+
+// Parse channel messages with flexible tool result handling
+fn parse_flexible_channel_message(message_str: &str) -> Result<ChannelMessage, String> {
+    // First, try standard parsing
+    if let Ok(channel_msg) = serde_json::from_str::<ChannelMessage>(message_str) {
+        return Ok(channel_msg);
+    }
+    
+    // If standard parsing fails, try flexible parsing
+    let raw_json: serde_json::Value = serde_json::from_str(message_str)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    
+    if let Some(msg_type) = raw_json.get("type").and_then(|v| v.as_str()) {
+        match msg_type {
+            "head" => {
+                if let Some(head) = raw_json.get("head").and_then(|v| v.as_str()) {
+                    return Ok(ChannelMessage::Head { head: head.to_string() });
+                }
+            }
+            "chat_message" => {
+                if let Some(message_obj) = raw_json.get("message") {
+                    return parse_flexible_chat_message_entry(message_obj);
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    Err("Unknown channel message format".to_string())
+}
+
+// Parse chat message entry with flexible content handling
+fn parse_flexible_chat_message_entry(message_obj: &serde_json::Value) -> Result<ChannelMessage, String> {
+    let id = message_obj.get("id")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing message ID")?;
+    
+    let parent_id = message_obj.get("parent_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    
+    let entry_obj = message_obj.get("entry")
+        .ok_or("Missing entry field")?;
+    
+    // Parse entry variant
+    let entry_variant = if let Some(message_data) = entry_obj.get("Message") {
+        // User message with potentially complex tool results
+        let role = message_data.get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("User")
+            .to_string();
+        
+        let content_array = message_data.get("content")
+            .and_then(|v| v.as_array())
+            .ok_or("Missing or invalid content array")?;
+        
+        let content = parse_flexible_content_array(content_array)?;
+        
+        MessageEntryVariant::Message(UserMessage { role, content })
+    } else if let Some(completion_data) = entry_obj.get("Completion") {
+        // Assistant completion
+        let content_array = completion_data.get("content")
+            .and_then(|v| v.as_array())
+            .ok_or("Missing or invalid completion content")?;
+        
+        let content = parse_flexible_content_array(content_array)?;
+        
+        let id = completion_data.get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        
+        let model = completion_data.get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        
+        let role = completion_data.get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Assistant")
+            .to_string();
+        
+        let stop_reason = completion_data.get("stop_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("EndTurn")
+            .to_string();
+        
+        let usage = completion_data.get("usage")
+            .and_then(|v| {
+                if let (Some(input), Some(output)) = (
+                    v.get("input_tokens").and_then(|t| t.as_u64()),
+                    v.get("output_tokens").and_then(|t| t.as_u64())
+                ) {
+                    Some(TokenUsage {
+                        input_tokens: input as u32,
+                        output_tokens: output as u32,
+                    })
+                } else {
+                    None
+                }
+            });
+        
+        MessageEntryVariant::Completion(CompletionMessage {
+            content,
+            id,
+            model,
+            role,
+            stop_reason,
+            usage,
+        })
+    } else {
+        return Err("Unknown entry variant".to_string());
+    };
+    
+    let chat_message_entry = ChatMessageEntry {
+        id: id.to_string(),
+        parent_id,
+        entry: entry_variant,
+    };
+    
+    Ok(ChannelMessage::ChatMessage {
+        message: chat_message_entry,
+    })
+}
+
+// Parse content array with enhanced tool result handling
+fn parse_flexible_content_array(content_array: &[serde_json::Value]) -> Result<Vec<MessageContent>, String> {
+    let mut parsed_content = Vec::new();
+    
+    for (i, content_item) in content_array.iter().enumerate() {
+        if let Some(content_obj) = content_item.as_object() {
+            // Handle text content
+            if let Some(text_value) = content_obj.get("Text") {
+                if let Some(text) = text_value.as_str() {
+                    log(&format!("📝 Flexible parsing item {}: Text content: '{}'", i, text));
+                    parsed_content.push(MessageContent::Text(text.to_string()));
+                    continue;
+                }
+            }
+            
+            // Handle tool use
+            if let Some(tool_use_value) = content_obj.get("ToolUse") {
+                if let Some(tool_use_obj) = tool_use_value.as_object() {
+                    log(&format!("🔧 Flexible parsing item {}: Tool Use", i));
+                    
+                    let id = tool_use_obj.get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    
+                    let name = tool_use_obj.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown_tool")
+                        .to_string();
+                    
+                    // Handle input - could be raw bytes array or JSON object
+                    let input_bytes = if let Some(input_array) = tool_use_obj.get("input").and_then(|v| v.as_array()) {
+                        // Input is already as byte array [123, 34, 112, ...]
+                        input_array.iter()
+                            .filter_map(|v| v.as_u64())
+                            .map(|n| n as u8)
+                            .collect::<Vec<u8>>()
+                    } else if let Some(input_obj) = tool_use_obj.get("input") {
+                        // Input is JSON object - serialize it
+                        serde_json::to_vec(input_obj)
+                            .map_err(|e| format!("Failed to serialize tool input: {}", e))?
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    let tool_use = bindings::colinrozzi::genai_types::types::ToolUse {
+                        id,
+                        name,
+                        input: input_bytes,
+                    };
+                    
+                    parsed_content.push(MessageContent::ToolUse(tool_use));
+                    continue;
+                }
+            }
+            
+            // Handle tool result with complex content structure
+            if let Some(tool_result_value) = content_obj.get("ToolResult") {
+                if let Some(tool_result_obj) = tool_result_value.as_object() {
+                    log(&format!("📊 Flexible parsing item {}: Tool Result", i));
+                    
+                    let tool_use_id = tool_result_obj.get("tool_use_id")
+                        .or_else(|| tool_result_obj.get("tool-use-id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    
+                    let is_error = tool_result_obj.get("is_error")
+                        .or_else(|| tool_result_obj.get("is-error"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    
+                    // Handle complex content structure
+                    let content_bytes = if let Some(content_array) = tool_result_obj.get("content").and_then(|v| v.as_array()) {
+                        // Extract text from complex structure like:
+                        // [{"Text": {"text": "actual content", "type_": "text", ...}}]
+                        let mut extracted_text = Vec::new();
+                        
+                        for content_item in content_array {
+                            if let Some(text_obj) = content_item.get("Text") {
+                                if let Some(text) = text_obj.get("text").and_then(|v| v.as_str()) {
+                                    extracted_text.push(text);
+                                }
+                            }
+                        }
+                        
+                        // Create simplified content structure
+                        let simplified_content = if extracted_text.len() == 1 {
+                            // Single text content
+                            serde_json::Value::String(extracted_text[0].to_string())
+                        } else if extracted_text.len() > 1 {
+                            // Multiple text parts - join them
+                            serde_json::Value::String(extracted_text.join("\n"))
+                        } else {
+                            // No text found - use original content
+                            tool_result_obj.get("content").unwrap_or(&serde_json::Value::Null).clone()
+                        };
+                        
+                        log(&format!("🔄 Simplified tool result content: {:?}", simplified_content));
+                        
+                        serde_json::to_vec(&simplified_content)
+                            .map_err(|e| format!("Failed to serialize tool result content: {}", e))?
+                    } else {
+                        // Handle other content formats
+                        let content_json = tool_result_obj.get("content")
+                            .unwrap_or(&serde_json::Value::Null);
+                        serde_json::to_vec(content_json)
+                            .map_err(|e| format!("Failed to serialize tool result content: {}", e))?
+                    };
+                    
+                    let tool_result = bindings::colinrozzi::genai_types::types::ToolResult {
+                        tool_use_id,
+                        content: content_bytes,
+                        is_error,
+                    };
+                    
+                    parsed_content.push(MessageContent::ToolResult(tool_result));
+                    continue;
+                }
+            }
+            
+            log(&format!("⚠️ Unknown content type in flexible parsing item {}: {:?}", i, content_obj.keys().collect::<Vec<_>>()));
+        }
+    }
+    
+    Ok(parsed_content)
+}
+
 // --- State Management ---
 
 fn get_state(state_bytes: &Option<Vec<u8>>) -> Result<FrontChatState, String> {
@@ -1501,8 +1755,8 @@ impl MessageServerClientGuest for Component {
         if let Ok(message_str) = String::from_utf8(message_bytes) {
             log(&format!("Channel message content: {}", message_str));
 
-            // Parse as channel message
-            match serde_json::from_str::<ChannelMessage>(&message_str) {
+            // Parse as channel message with flexible approach
+            match parse_flexible_channel_message(&message_str) {
                 Ok(ChannelMessage::Head { head }) => {
                     log(&format!("Received head update: {}", head));
                     // Head updates indicate new messages are available
