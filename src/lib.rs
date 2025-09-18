@@ -539,8 +539,22 @@ fn create_separated_tool_messages(
     role: String,
     content: Vec<MessageContent>,
     timestamp: u64,
-    finished: Option<bool>,
+    stop_reason: String,
 ) -> Vec<ChatMessage> {
+    
+    // Determine turn completion status based on stop_reason
+    let is_turn_complete = match stop_reason.as_str() {
+        "EndTurn" => true,      // Assistant completely finished
+        "ToolUse" => false,     // Waiting for tool result
+        "MaxTokens" => true,    // Forced stop, but turn is done
+        "ContentFilter" => true, // Stopped by filter, turn done
+        _ => false,             // Default to unfinished for unknown reasons
+    };
+    
+    log(&format!(
+        "🔄 Turn completion analysis: stop_reason='{}', is_complete={}", 
+        stop_reason, is_turn_complete
+    ));
     let mut messages = Vec::new();
     let mut current_text_content = Vec::new();
     let mut message_counter = 0;
@@ -559,7 +573,7 @@ fn create_separated_tool_messages(
                         role.clone(),
                         current_text_content.clone(),
                         timestamp,
-                        Some(true),
+                        Some(true), // Text before tool calls is always complete
                     );
                     messages.push(text_msg);
                     current_text_content.clear();
@@ -573,8 +587,12 @@ fn create_separated_tool_messages(
                     role.clone(),
                     tool_use.clone(),
                     timestamp,
-                    Some(false),
+                    Some(false), // Tool calls are never finished (waiting for execution)
                 );
+                log(&format!(
+                    "🔧 Created tool call message: {} - finished=false (waiting for execution)", 
+                    tool_use.name
+                ));
                 messages.push(tool_msg);
                 message_counter += 1;
             }
@@ -592,8 +610,12 @@ fn create_separated_tool_messages(
                     role.clone(),
                     tool_result.clone(),
                     timestamp,
-                    Some(true),
+                    Some(true), // Tool results are always finished (execution complete)
                 );
+                log(&format!(
+                    "📊 Created tool result message: {} - finished=true (execution complete)", 
+                    tool_result.tool_use_id
+                ));
                 messages.push(result_msg);
                 message_counter += 1;
             }
@@ -608,8 +630,12 @@ fn create_separated_tool_messages(
             role.clone(),
             current_text_content,
             timestamp,
-            finished,
+            Some(is_turn_complete), // Use turn completion status
         );
+        log(&format!(
+            "🏁 Final text message created - finished={} (stop_reason: '{}')", 
+            is_turn_complete, stop_reason
+        ));
         messages.push(final_text_msg);
     }
     
@@ -621,7 +647,7 @@ fn create_separated_tool_messages(
             role.clone(),
             vec![MessageContent::Text("[No content]".to_string())],
             timestamp,
-            finished,
+            Some(is_turn_complete), // Use turn completion status
         );
         messages.push(default_msg);
     }
@@ -1822,7 +1848,7 @@ fn handle_chat_message_update(
                     "assistant".to_string(),
                     completion.content,
                     0, // TODO: Add actual timestamp
-                    Some(completion.stop_reason == "EndTurn"),
+                    completion.stop_reason, // Pass stop_reason for intelligent turn completion
                 )
             }
             _ => unreachable!(), // We already checked this above
