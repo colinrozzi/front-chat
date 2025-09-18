@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Theater Chat</title>
+    <title>Chat</title>
     <style>
         * {
             margin: 0;
@@ -253,7 +253,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>🎭 Theater Chat</h1>
+        <h1 id="addressHeader"></h1>
         <div class="connection-status" id="connectionStatus">
             <span class="status-connecting">Connecting...</span>
         </div>
@@ -262,7 +262,7 @@
     <div class="chat-container">
         <div class="messages" id="messages">
             <div class="empty-state">
-                <h2>Welcome to Theater Chat!</h2>
+                <h2>Welcome!</h2>
                 <p>Start a conversation with your AI assistant</p>
             </div>
         </div>
@@ -325,6 +325,10 @@
                     this.messageInput.style.height = 'auto';
                     this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 120) + 'px';
                 });
+                
+                // Set the address in the header (will be updated when we get conversation ID)
+                this.addressHeader = document.getElementById('addressHeader');
+                this.addressHeader.textContent = 'Connecting...';
             }
 
             connect() {
@@ -427,6 +431,8 @@
                     case 'connected':
                         this.conversationId = message.conversation_id;
                         this.updateConnectionStatus('connected');
+                        // Update the header with the conversation ID
+                        this.addressHeader.textContent = message.conversation_id;
                         break;
                         
                     case 'message_added':
