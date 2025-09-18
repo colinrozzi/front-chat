@@ -91,6 +91,7 @@ enum ChatProxyRequest {
     AddMessage {
         message: Message,
     },
+    GetHistory,
     #[serde(rename = "get_metadata")]
     GetMetadata,
 }
@@ -104,6 +105,9 @@ enum ChatProxyResponse {
     Success,
     Error {
         message: String,
+    },
+    History {
+        messages: Vec<Value>,
     },
     #[serde(rename = "metadata")]
     Metadata {
@@ -493,6 +497,61 @@ impl HttpHandlersGuest for Component {
             }
         }
 
+        // Automatically load conversation history for new connections
+        if let Some(chat_state_id) = &state.chat_state_id {
+            log(&format!(
+                "Auto-loading conversation history for new connection: {}",
+                connection_id
+            ));
+
+            let get_history_request = ChatProxyRequest::GetHistory;
+            if let Ok(request_json) = serde_json::to_string(&get_history_request) {
+                match bindings::theater::simple::message_server_host::request(
+                    &chat_state_id,
+                    request_json.as_bytes(),
+                ) {
+                    Ok(response_bytes) => {
+                        if let Ok(response_str) = String::from_utf8(response_bytes) {
+                            if let Ok(ChatProxyResponse::History { messages }) = serde_json::from_str::<ChatProxyResponse>(&response_str) {
+                                log(&format!(
+                                    "Auto-loaded {} messages for connection {}",
+                                    messages.len(),
+                                    connection_id
+                                ));
+                                
+                                // Convert and send history to this specific connection
+                                if let Ok(client_messages) = convert_chat_state_messages_to_client(&messages) {
+                                    let history_response = ServerResponse::ConversationState {
+                                        messages: client_messages,
+                                        conversation_id: state.conversation_id.clone(),
+                                    };
+                                    
+                                    if let Ok(history_ws_message) = create_websocket_message(&history_response) {
+                                        if let Err(e) = http_framework::send_websocket_message(
+                                            state.server_id,
+                                            connection_id,
+                                            &history_ws_message,
+                                        ) {
+                                            log(&format!(
+                                                "Failed to send history to connection {}: {}",
+                                                connection_id, e
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!(
+                            "Failed to auto-load history for connection {}: {:?}",
+                            connection_id, e
+                        ));
+                    }
+                }
+            }
+        }
+
         Ok((Some(set_state(&state)),))
     }
 
@@ -561,6 +620,103 @@ impl HttpHandlersGuest for Component {
 
         Ok((Some(set_state(&state)),))
     }
+}
+
+// --- Message Conversion Functions ---
+
+// Convert chat-state messages to client message format
+fn convert_chat_state_messages_to_client(messages: &[Value]) -> Result<Vec<ChatMessage>, String> {
+    let mut client_messages = Vec::new();
+    
+    for (i, message_value) in messages.iter().enumerate() {
+        log(&format!("🔄 Converting message {}: {:?}", i, message_value));
+        
+        // Parse the chat-state message
+        let id = message_value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&format!("msg_{}", i))
+            .to_string();
+            
+        if let Some(entry) = message_value.get("entry") {
+            match entry {
+                Value::Object(entry_obj) => {
+                    // Check if this is a Message or Completion
+                    if let Some(message_data) = entry_obj.get("Message") {
+                        // This is a user message
+                        if let Some(role) = message_data.get("role").and_then(|r| r.as_str()) {
+                            if let Some(content_array) = message_data.get("content").and_then(|c| c.as_array()) {
+                                let content = extract_text_from_content_array(content_array);
+                                
+                                client_messages.push(ChatMessage {
+                                    id,
+                                    role: role.to_lowercase(),
+                                    content,
+                                    timestamp: 0, // TODO: Add actual timestamp
+                                    finished: Some(true),
+                                });
+                            }
+                        }
+                    } else if let Some(completion_data) = entry_obj.get("Completion") {
+                        // This is an assistant completion
+                        if let Some(content_array) = completion_data.get("content").and_then(|c| c.as_array()) {
+                            let content = extract_text_from_content_array(content_array);
+                            let stop_reason = completion_data
+                                .get("stop_reason")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("EndTurn");
+                            
+                            client_messages.push(ChatMessage {
+                                id,
+                                role: "assistant".to_string(),
+                                content,
+                                timestamp: 0, // TODO: Add actual timestamp
+                                finished: Some(stop_reason == "EndTurn"),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    log(&format!("⚠️ Unexpected entry format for message {}", i));
+                }
+            }
+        }
+    }
+    
+    log(&format!("✅ Converted {} messages to client format", client_messages.len()));
+    Ok(client_messages)
+}
+
+// Extract text content from content array (similar to extract_text_content but for JSON values)
+fn extract_text_from_content_array(content_array: &[Value]) -> String {
+    let extracted: Vec<String> = content_array
+        .iter()
+        .enumerate()
+        .filter_map(|(i, content_item)| {
+            if let Some(text_obj) = content_item.as_object() {
+                if let Some(text_value) = text_obj.get("Text") {
+                    if let Some(text) = text_value.as_str() {
+                        log(&format!("📝 Item {}: Text content: '{}'", i, text));
+                        return Some(text.to_string());
+                    }
+                }
+                // Handle tool use/results
+                if text_obj.contains_key("ToolUse") {
+                    log(&format!("🔧 Item {}: Tool Use", i));
+                    return Some("[Tool Use]".to_string());
+                }
+                if text_obj.contains_key("ToolResult") {
+                    log(&format!("📊 Item {}: Tool Result", i));
+                    return Some("[Tool Result]".to_string());
+                }
+            }
+            None
+        })
+        .collect();
+    
+    let result = extracted.join(" ");
+    log(&format!("✅ Extracted text from array: '{}'", result));
+    result
 }
 
 // --- Client Request Handling ---
@@ -657,14 +813,89 @@ fn handle_client_request(
         ClientRequest::GetConversation => {
             log("Processing get_conversation");
 
-            // TODO: Get actual conversation from chat-state
-            // For now, return empty conversation
-            let response = ServerResponse::ConversationState {
-                messages: vec![],
-                conversation_id: state.conversation_id.clone(),
-            };
+            // Request history from chat-state-proxy
+            if let Some(chat_state_id) = &state.chat_state_id {
+                log(&format!(
+                    "Requesting conversation history from chat-state-proxy: {}",
+                    chat_state_id
+                ));
 
-            broadcast_to_connections(state, &response)
+                let get_history_request = ChatProxyRequest::GetHistory;
+                let request_json = serde_json::to_string(&get_history_request)
+                    .map_err(|e| format!("Failed to serialize get history request: {}", e))?;
+
+                match bindings::theater::simple::message_server_host::request(
+                    &chat_state_id,
+                    request_json.as_bytes(),
+                ) {
+                    Ok(response_bytes) => {
+                        match String::from_utf8(response_bytes) {
+                            Ok(response_str) => {
+                                log(&format!("Get history response: {}", response_str));
+                                match serde_json::from_str::<ChatProxyResponse>(&response_str) {
+                                    Ok(ChatProxyResponse::History { messages }) => {
+                                        log(&format!(
+                                            "Got {} messages from history",
+                                            messages.len()
+                                        ));
+                                        
+                                        // Convert chat-state messages to client format
+                                        let client_messages = convert_chat_state_messages_to_client(&messages)?;
+                                        
+                                        let response = ServerResponse::ConversationState {
+                                            messages: client_messages,
+                                            conversation_id: state.conversation_id.clone(),
+                                        };
+                                        
+                                        broadcast_to_connections(state, &response)
+                                    }
+                                    Ok(_) => {
+                                        log("Unexpected response type from get history");
+                                        let response = ServerResponse::Error {
+                                            message: "Failed to get conversation history".to_string(),
+                                        };
+                                        broadcast_to_connections(state, &response)
+                                    }
+                                    Err(e) => {
+                                        log(&format!(
+                                            "Failed to parse get history response: {}",
+                                            e
+                                        ));
+                                        let response = ServerResponse::Error {
+                                            message: "Failed to parse conversation history".to_string(),
+                                        };
+                                        broadcast_to_connections(state, &response)
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log(&format!("Failed to decode get history response: {}", e));
+                                let response = ServerResponse::Error {
+                                    message: "Failed to decode conversation history".to_string(),
+                                };
+                                broadcast_to_connections(state, &response)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!("Failed to get conversation history: {:?}", e));
+                        let response = ServerResponse::Error {
+                            message: "Failed to request conversation history".to_string(),
+                        };
+                        broadcast_to_connections(state, &response)
+                    }
+                }
+            } else {
+                log("No chat-state-proxy actor available for getting conversation");
+                
+                // Return empty conversation
+                let response = ServerResponse::ConversationState {
+                    messages: vec![],
+                    conversation_id: state.conversation_id.clone(),
+                };
+                
+                broadcast_to_connections(state, &response)
+            }
         }
         ClientRequest::UpdateSettings {
             settings: _settings,
@@ -1038,6 +1269,12 @@ fn handle_chat_proxy_response(
         ChatProxyResponse::ChatStateActorId { actor_id: _ } => {
             log("Received chat state actor ID from proxy");
             // Not used in this context
+            Ok(())
+        }
+        ChatProxyResponse::History { messages } => {
+            log(&format!("Received history with {} messages from proxy", messages.len()));
+            // This response is typically handled directly in the request context
+            // but we can log it here for debugging
             Ok(())
         }
         ChatProxyResponse::Metadata {
