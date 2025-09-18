@@ -104,6 +104,15 @@ enum ToolStatus {
     Error,
 }
 
+// Enhanced message type classification
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+enum ChatMessageType {
+    Text,
+    ToolCall,
+    ToolResult,
+    Mixed, // For messages that contain multiple types
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct ChatMessage {
     id: String,                           // Content hash
@@ -113,11 +122,16 @@ struct ChatMessage {
     timestamp: u64,
     finished: Option<bool>,
     
-    // Enhanced display fields
+    // Enhanced classification fields
+    message_type: ChatMessageType,
     display_text: String,                 // Flattened text for simple rendering
     tool_uses: Vec<RichToolUse>,         // Parsed tool uses
     tool_results: Vec<RichToolResult>,   // Parsed tool results
     has_tools: bool,                     // Whether this message contains tools
+    
+    // Tool relationship tracking
+    tool_call_id: Option<String>,        // For tool result messages
+    related_message_id: Option<String>,   // Links tool calls to results
 }
 
 // Chat-state-proxy actor message protocol
@@ -236,6 +250,17 @@ fn create_enhanced_chat_message(
     let (display_text, tool_uses, tool_results) = extract_enhanced_content(&content);
     let has_tools = !tool_uses.is_empty() || !tool_results.is_empty();
     
+    // Determine message type based on content
+    let message_type = if tool_uses.len() > 0 && tool_results.len() > 0 {
+        ChatMessageType::Mixed
+    } else if tool_uses.len() > 0 {
+        ChatMessageType::ToolCall
+    } else if tool_results.len() > 0 {
+        ChatMessageType::ToolResult
+    } else {
+        ChatMessageType::Text
+    };
+    
     ChatMessage {
         id,
         parent_id,
@@ -243,10 +268,193 @@ fn create_enhanced_chat_message(
         content,
         timestamp,
         finished,
+        message_type,
         display_text,
         tool_uses,
         tool_results,
         has_tools,
+        tool_call_id: None, // Will be set by specialized creation functions
+        related_message_id: None,
+    }
+}
+
+// Create separate messages for tool calls
+fn create_separated_tool_messages(
+    base_id: String,
+    parent_id: Option<String>,
+    role: String,
+    content: Vec<MessageContent>,
+    timestamp: u64,
+    finished: Option<bool>,
+) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+    let mut current_text_content = Vec::new();
+    let mut message_counter = 0;
+    
+    for content_item in content.iter() {
+        match content_item {
+            MessageContent::Text(_text) => {
+                current_text_content.push(content_item.clone());
+            }
+            MessageContent::ToolUse(tool_use) => {
+                // Create text message for accumulated content if any
+                if !current_text_content.is_empty() {
+                    let text_msg = create_text_only_message(
+                        format!("{}-text-{}", base_id, message_counter),
+                        parent_id.clone(),
+                        role.clone(),
+                        current_text_content.clone(),
+                        timestamp,
+                        Some(true),
+                    );
+                    messages.push(text_msg);
+                    current_text_content.clear();
+                    message_counter += 1;
+                }
+                
+                // Create tool call message
+                let tool_msg = create_tool_call_message(
+                    format!("{}-tool-{}", base_id, message_counter),
+                    if messages.is_empty() { parent_id.clone() } else { Some(messages.last().unwrap().id.clone()) },
+                    role.clone(),
+                    tool_use.clone(),
+                    timestamp,
+                    Some(false),
+                );
+                messages.push(tool_msg);
+                message_counter += 1;
+            }
+            MessageContent::ToolResult(tool_result) => {
+                // Find corresponding tool call
+                let tool_call_msg_id = messages.iter()
+                    .rev() // Search backwards
+                    .find(|msg| msg.message_type == ChatMessageType::ToolCall && 
+                              msg.tool_uses.iter().any(|tu| tu.id == tool_result.tool_use_id))
+                    .map(|msg| msg.id.clone());
+                
+                let result_msg = create_tool_result_message(
+                    format!("{}-result-{}", base_id, message_counter),
+                    tool_call_msg_id.clone(),
+                    role.clone(),
+                    tool_result.clone(),
+                    timestamp,
+                    Some(true),
+                );
+                messages.push(result_msg);
+                message_counter += 1;
+            }
+        }
+    }
+    
+    // Handle remaining text content
+    if !current_text_content.is_empty() {
+        let final_text_msg = create_text_only_message(
+            format!("{}-text-final", base_id),
+            if messages.is_empty() { parent_id.clone() } else { Some(messages.last().unwrap().id.clone()) },
+            role.clone(),
+            current_text_content,
+            timestamp,
+            finished,
+        );
+        messages.push(final_text_msg);
+    }
+    
+    // If no messages created, make a default one
+    if messages.is_empty() {
+        let default_msg = create_text_only_message(
+            base_id,
+            parent_id.clone(),
+            role.clone(),
+            vec![MessageContent::Text("[No content]".to_string())],
+            timestamp,
+            finished,
+        );
+        messages.push(default_msg);
+    }
+    
+    messages
+}
+
+fn create_text_only_message(
+    id: String,
+    parent_id: Option<String>,
+    role: String,
+    content: Vec<MessageContent>,
+    timestamp: u64,
+    finished: Option<bool>,
+) -> ChatMessage {
+    let (display_text, tool_uses, tool_results) = extract_enhanced_content(&content);
+    
+    ChatMessage {
+        id,
+        parent_id,
+        role,
+        content,
+        timestamp,
+        finished,
+        message_type: ChatMessageType::Text,
+        display_text,
+        tool_uses,
+        tool_results,
+        has_tools: false,
+        tool_call_id: None,
+        related_message_id: None,
+    }
+}
+
+fn create_tool_call_message(
+    id: String,
+    parent_id: Option<String>,
+    role: String,
+    tool_use: bindings::colinrozzi::genai_types::types::ToolUse,
+    timestamp: u64,
+    finished: Option<bool>,
+) -> ChatMessage {
+    let content = vec![MessageContent::ToolUse(tool_use.clone())];
+    let (display_text, tool_uses, tool_results) = extract_enhanced_content(&content);
+    
+    ChatMessage {
+        id,
+        parent_id,
+        role,
+        content,
+        timestamp,
+        finished,
+        message_type: ChatMessageType::ToolCall,
+        display_text,
+        tool_uses,
+        tool_results,
+        has_tools: true,
+        tool_call_id: Some(tool_use.id.clone()),
+        related_message_id: None,
+    }
+}
+
+fn create_tool_result_message(
+    id: String,
+    parent_id: Option<String>,
+    role: String,
+    tool_result: bindings::colinrozzi::genai_types::types::ToolResult,
+    timestamp: u64,
+    finished: Option<bool>,
+) -> ChatMessage {
+    let content = vec![MessageContent::ToolResult(tool_result.clone())];
+    let (display_text, tool_uses, tool_results) = extract_enhanced_content(&content);
+    
+    ChatMessage {
+        id,
+        parent_id: parent_id.clone(),
+        role,
+        content,
+        timestamp,
+        finished,
+        message_type: ChatMessageType::ToolResult,
+        display_text,
+        tool_uses,
+        tool_results,
+        has_tools: true,
+        tool_call_id: Some(tool_result.tool_use_id.clone()),
+        related_message_id: parent_id,
     }
 }
 
@@ -257,7 +465,7 @@ fn create_websocket_message(response: &ServerResponse) -> Result<WebsocketMessag
         .map_err(|e| format!("Failed to serialize response: {}", e))?;
 
     Ok(WebsocketMessage {
-        ty: MessageType::Text,
+        ty: bindings::theater::simple::websocket_types::MessageType::Text,
         text: Some(json_text),
         data: None,
     })
@@ -630,7 +838,7 @@ impl HttpHandlersGuest for Component {
         let mut state = get_state(&state)?;
 
         match message.ty {
-            MessageType::Text => {
+            bindings::theater::simple::websocket_types::MessageType::Text => {
                 if let Some(text) = message.text {
                     log(&format!(
                         "Received WebSocket message from {}: {}",
@@ -1339,6 +1547,67 @@ fn handle_chat_message_update(
 ) -> Result<(), String> {
     log(&format!("Processing chat message with ID: {}", chat_message.id));
     
+    // Check if we should separate tool messages
+    let should_separate_tools = match &chat_message.entry {
+        MessageEntryVariant::Completion(completion) => {
+            completion.content.iter().any(|content| {
+                matches!(content, MessageContent::ToolUse(_) | MessageContent::ToolResult(_))
+            })
+        }
+        _ => false,
+    };
+    
+    if should_separate_tools {
+        log("Creating separated tool messages");
+        
+        let messages = match chat_message.entry {
+            MessageEntryVariant::Completion(completion) => {
+                create_separated_tool_messages(
+                    chat_message.id,
+                    chat_message.parent_id,
+                    "assistant".to_string(),
+                    completion.content,
+                    0, // TODO: Add actual timestamp
+                    Some(completion.stop_reason == "EndTurn"),
+                )
+            }
+            _ => unreachable!(), // We already checked this above
+        };
+        
+        // Broadcast all separated messages
+        for (index, message) in messages.iter().enumerate() {
+            log(&format!(
+                "Broadcasting separated message {}/{}: type={:?}, id={}", 
+                index + 1, messages.len(), message.message_type, message.id
+            ));
+            
+            let server_response = ServerResponse::MessageAdded {
+                message: message.clone(),
+            };
+            
+            for connection_id in state.active_connections.keys() {
+                log(&format!("Sending separated message to connection: {}", connection_id));
+                if let Ok(ws_message) = create_websocket_message(&server_response) {
+                    if let Err(e) = http_framework::send_websocket_message(
+                        state.server_id,
+                        *connection_id,
+                        &ws_message,
+                    ) {
+                        log(&format!(
+                            "Failed to send separated message to connection {}: {}",
+                            connection_id, e
+                        ));
+                    } else {
+                        log(&format!("Successfully sent separated message to connection {}", connection_id));
+                    }
+                }
+            }
+        }
+        
+        return Ok(());
+    }
+    
+    // For non-tool messages, use the original single message approach
     let display_message = match chat_message.entry {
         MessageEntryVariant::Message(user_msg) => {
             log(&format!("User message: {:?}", user_msg));
