@@ -453,7 +453,8 @@
             constructor(data) {
                 this.id = data.id;
                 this.role = data.role;
-                this.content = data.content || this.extractDisplayText(data);
+                // Always use extractDisplayText to get a proper string
+                this.content = this.extractDisplayText(data);
                 this.originalContent = this.content; // Store original for cancel
                 this.isEditing = false;
                 this.cursorPosition = { line: 0, col: 0 };
@@ -462,20 +463,30 @@
             }
             
             extractDisplayText(data) {
+                console.log('Extracting display text from:', data);
+                
                 if (data.display_text && data.display_text.trim()) {
+                    console.log('Using display_text:', data.display_text);
                     return data.display_text;
                 }
                 
                 if (data.content && Array.isArray(data.content)) {
+                    console.log('Processing content array:', data.content);
                     const textParts = data.content
-                        .filter(c => c.Text)
+                        .filter(c => {
+                            console.log('Content item:', c);
+                            return c && c.Text;
+                        })
                         .map(c => c.Text);
                     if (textParts.length > 0) {
-                        return textParts.join('\n');
+                        const result = textParts.join('\n');
+                        console.log('Extracted text parts:', result);
+                        return result;
                     }
                 }
                 
-                return '[No text content]';
+                console.log('No text content found, using fallback');
+                return `[No text content for ${data.role} message]`;
             }
             
             createElement() {
