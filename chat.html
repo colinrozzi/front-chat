@@ -44,21 +44,17 @@
             padding: 5px 10px; 
         }
         .message { margin: 5px 0; padding: 5px; border-bottom: 1px dotted #eee; }
-        .user { background: #f0f0f0; }
-        .assistant { background: #e8f4fd; }
+
         .status { font-size: 12px; color: #666; }
         .message-id { font-size: 10px; color: #999; font-family: monospace; }
     </style>
 </head>
 <body>
     <div class="content">
-        <h3>Theater Chat Actor</h3>
-        
         <!-- Status Info -->
         <div class="status">
             Status: <span id="connectionStatus">Connecting...</span><br>
-            Conversation ID: <span id="conversationId">-</span><br>
-            Chat State Actor: <span id="chatStateActor">-</span>
+            Conversation ID: <span id="conversationId">-</span>
         </div>
         
         <hr>
@@ -85,7 +81,6 @@
         const inputEl = document.getElementById('input');
         const sendBtn = document.getElementById('send');
         const conversationIdEl = document.getElementById('conversationId');
-        const chatStateActorEl = document.getElementById('chatStateActor');
         
         function connect() {
             const wsUrl = `ws://${window.location.host}/ws`;
@@ -161,7 +156,7 @@
             // Create content with message ID
             const content = `
                 <div class="message-id">ID: ${msg.id}</div>
-                <strong>${msg.role}:</strong> ${getDisplayText(msg)}
+                ${getDisplayText(msg)}
             `;
             
             div.innerHTML = content;
