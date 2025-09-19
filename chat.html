@@ -43,7 +43,17 @@
         #send { 
             padding: 5px 10px; 
         }
-        .message { margin: 5px 0; padding: 5px; border-bottom: 1px dotted #eee; }
+        .message { 
+            margin: 5px 0; 
+            padding: 5px; 
+            border-bottom: 1px dotted #eee;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .message-content {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
 
         .status { font-size: 12px; color: #666; }
         .message-id { font-size: 10px; color: #999; font-family: monospace; }
@@ -153,13 +163,18 @@
             const div = document.createElement('div');
             div.className = `message ${msg.role}`;
             
-            // Create content with message ID
-            const content = `
-                <div class="message-id">ID: ${msg.id}</div>
-                ${getDisplayText(msg)}
-            `;
+            // Create message ID element
+            const idDiv = document.createElement('div');
+            idDiv.className = 'message-id';
+            idDiv.textContent = `ID: ${msg.id}`;
             
-            div.innerHTML = content;
+            // Create message content element
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = getDisplayText(msg);
+            
+            div.appendChild(idDiv);
+            div.appendChild(contentDiv);
             messagesEl.appendChild(div);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
@@ -176,7 +191,7 @@
                     .filter(c => c.Text)
                     .map(c => c.Text);
                 if (textParts.length > 0) {
-                    return textParts.join(' ');
+                    return textParts.join('\n');
                 }
             }
             
