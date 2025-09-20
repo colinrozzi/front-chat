@@ -547,10 +547,20 @@
                     this.messageTree.get(null).push(message);
                 }
                 
+                const contentPreview = (() => {
+                    try {
+                        const content = message.content || '[empty]';
+                        const str = typeof content === 'string' ? content : JSON.stringify(content);
+                        return str.substring(0, 50) + (str.length > 50 ? '...' : '');
+                    } catch (e) {
+                        return '[preview error]';
+                    }
+                })();
+                
                 console.log('Added to message tree:', {
                     id: message.id,
                     parent_id: message.parent_id,
-                    content: message.content.substring(0, 50) + '...'
+                    content: contentPreview
                 });
             }
             
@@ -1218,16 +1228,18 @@
                 return;
             }
             
-            // Add message to tree structure
-            vimChat.addToMessageTree(msg);
+            // Create the VimMessage object first
+            const vimMessage = vimChat.addMessage(msg);
+            
+            // Add to tree structure using the VimMessage object
+            vimChat.addToMessageTree(vimMessage);
             
             // Update conversation head if this is the newest message
             if (!msg.parent_id || msg.parent_id === vimChat.headMessage?.id) {
-                vimChat.headMessage = msg;
+                vimChat.headMessage = vimMessage;
             }
             
-            // Create and display the message
-            const vimMessage = vimChat.addMessage(msg);
+            // Display the message
             messagesEl.appendChild(vimMessage.element);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
