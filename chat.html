@@ -465,11 +465,8 @@
                         // Send to WebSocket (simulate the old sendUserMessage)
                         this.sendMessageToServer(message.content);
                         
-                        // Create new draft message for next input at the bottom
-                        this.createNewDraftMessage();
-                        
-                        // Scroll to show the new content
-                        messagesEl.scrollTop = messagesEl.scrollHeight;
+                        // Exit to global mode after sending
+                        this.exitToGlobalMode();
                     } else if (!message.isDraft) {
                         console.log('Regenerating completion for committed message:', message.id);
                         // Future: Trigger regeneration for any message (branching!)
