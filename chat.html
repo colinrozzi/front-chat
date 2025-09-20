@@ -440,8 +440,11 @@
                         // Send to WebSocket (simulate the old sendUserMessage)
                         this.sendMessageToServer(message.content);
                         
-                        // Create new draft message for next input
+                        // Create new draft message for next input at the bottom
                         this.createNewDraftMessage();
+                        
+                        // Scroll to show the new content
+                        messagesEl.scrollTop = messagesEl.scrollHeight;
                     } else if (!message.isDraft) {
                         console.log('Regenerating completion for committed message:', message.id);
                         // Future: Trigger regeneration for any message (branching!)
@@ -480,6 +483,9 @@
                 this.selectMessage(this.messages.length - 1);
                 this.enterMessageMode();
                 this.enterEditMode('insert');
+                
+                // Scroll to the bottom to show the new draft
+                messagesEl.scrollTop = messagesEl.scrollHeight;
                 
                 return draftMessage;
             }
@@ -636,6 +642,15 @@
             
             createNewMessage() {
                 console.log('Creating new draft message');
+                
+                // Clear the new conversation prompt if it exists
+                const statusElements = messagesEl.querySelectorAll('.status');
+                statusElements.forEach(el => {
+                    if (el.textContent.includes('Press o to create')) {
+                        el.remove();
+                    }
+                });
+                
                 this.createNewDraftMessage();
             }
             
@@ -1055,8 +1070,12 @@
                     
                 case 'conversation_state':
                     clearMessages();
-                    addMessage('system', `Loaded ${data.messages.length} messages`);
-                    data.messages.forEach(msg => displayMessage(msg));
+                    if (data.messages.length > 0) {
+                        addMessage('system', `Loaded ${data.messages.length} messages`);
+                        data.messages.forEach(msg => displayMessage(msg));
+                    } else {
+                        showNewConversationPrompt();
+                    }
                     break;
                     
                 case 'error':
@@ -1112,6 +1131,16 @@
             vimChat.selectedMessageIndex = -1;
         }
         
+        function showNewConversationPrompt() {
+            if (vimChat.messages.length === 0) {
+                const promptDiv = document.createElement('div');
+                promptDiv.className = 'status';
+                promptDiv.style.cssText = 'text-align: center; padding: 20px; color: #666; font-style: italic;';
+                promptDiv.innerHTML = 'New conversation started.<br>Press <strong>o</strong> to create your first message.';
+                messagesEl.appendChild(promptDiv);
+            }
+        }
+        
         function sendMessage(message) {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(message));
@@ -1120,23 +1149,11 @@
         
         // sendUserMessage removed - now using vim message components
         
-        // Initialize with a draft message
+        // Initialize with conversation-first approach
         function initializeInterface() {
-            // Create initial draft message
-            const initialDraft = {
-                id: 'draft_initial',
-                role: 'user',
-                content: '',
-                display_text: ''
-            };
-            
-            const draftMessage = vimChat.addMessage(initialDraft);
-            messagesEl.appendChild(draftMessage.element);
-            
-            // Auto-select and enter editing mode
-            vimChat.selectMessage(0);
-            vimChat.enterMessageMode();
-            vimChat.enterEditMode('insert');
+            // Don't create initial draft - let user create it with 'o' when ready
+            // This keeps the conversation history at the top
+            console.log('Interface initialized - use "o" to create new message');
         }
         
         // Start connection and initialize
