@@ -214,7 +214,14 @@
             }
             
             updateModeIndicator() {
-                this.modeIndicator.textContent = this.mode;
+                const modeTexts = {
+                    'GLOBAL': 'GLOBAL (j/k:nav, o:new, Enter:select)',
+                    'MESSAGE': 'MESSAGE (i:edit, Enter:send, Esc:back)', 
+                    'EDITING': 'EDITING (Cmd+Enter:send, Esc:save)',
+                    'SEARCH': 'SEARCH'
+                };
+                
+                this.modeIndicator.textContent = modeTexts[this.mode] || this.mode;
                 const colors = {
                     'GLOBAL': '#666',
                     'MESSAGE': '#4A90E2', 
@@ -249,10 +256,19 @@
             
             isVimCommand(key, event) {
                 const vimKeys = ['j', 'k', 'i', 'a', 'I', 'A', 'o', 'O', 'Enter', 'Escape', 'h', 'l', 'g', 'G', 'd', 'y', 'p', 'x', 'r', 'w', 'b', '/', '?', 'n', 'N', 'u', 'z'];
+                
                 // Special handling for search mode
                 if (this.mode === 'SEARCH') {
                     return true; // In search mode, handle all keys
                 }
+                
+                // Special handling for Enter key
+                if (key === 'Enter') {
+                    // Only treat as vim command if Cmd/Ctrl is held (for sending)
+                    // or if we're not in editing mode
+                    return (event.metaKey || event.ctrlKey) || this.mode !== 'EDITING';
+                }
+                
                 return vimKeys.includes(key) && !event.ctrlKey && !event.metaKey;
             }
             
@@ -280,7 +296,13 @@
                         this.goToLastMessage();
                         break;
                     case 'Enter':
-                        if (this.selectedMessageIndex >= 0) {
+                        if (event.metaKey || event.ctrlKey) {
+                            // Cmd/Ctrl+Enter in GLOBAL mode - quick send if message selected
+                            if (this.selectedMessageIndex >= 0) {
+                                this.generateCompletion();
+                            }
+                        } else if (this.selectedMessageIndex >= 0) {
+                            // Regular Enter - enter message mode
                             this.enterMessageMode();
                         }
                         break;
@@ -415,8 +437,11 @@
                         this.paste();
                         break;
                     case 'Enter':
-                        // Generate completion for current message
-                        this.generateCompletion();
+                        // Only send if Cmd/Ctrl is held
+                        if (event.metaKey || event.ctrlKey) {
+                            this.generateCompletion();
+                        }
+                        // Otherwise, Enter is handled normally for line breaks
                         break;
                 }
             }
@@ -884,6 +909,7 @@
                 this.textarea = document.createElement('textarea');
                 this.textarea.className = 'edit-textarea';
                 this.textarea.value = this.content;
+                this.textarea.placeholder = 'Type your message... (Cmd+Enter to send, Escape to finish editing)';
                 
                 // Position cursor based on insert type
                 this.positionCursor(insertType);
@@ -936,12 +962,22 @@
             }
             
             setupTextareaEvents() {
-                // Handle Escape to exit edit mode
+                // Handle special keys in textarea
                 this.textarea.addEventListener('keydown', (e) => {
                     if (e.key === 'Escape') {
                         e.preventDefault();
                         e.stopPropagation();
                         vimChat.exitEditMode(true);
+                    }
+                    // Cmd+Enter or Ctrl+Enter to send message
+                    else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // Save the current content first
+                        this.content = this.textarea.value;
+                        vimChat.exitEditMode(true);
+                        // Then generate completion
+                        vimChat.generateCompletion();
                     }
                     // Ctrl+C to cancel without saving
                     else if (e.key === 'c' && e.ctrlKey) {
