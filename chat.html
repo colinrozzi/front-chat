@@ -182,8 +182,9 @@
                 this.selectedMessageIndex = -1;
                 this.messages = [];
                 this.commandBuffer = '';
-                this.messageRegistry = new Map(); // Track message IDs to prevent duplicates
-                this.contentRegistry = new Map(); // Track message content to prevent duplicates
+                this.messageRegistry = new Map(); // ID → message object
+                this.messageTree = new Map(); // parent_id → [child_messages]
+                this.headMessage = null; // Current conversation head
                 
                 // Search functionality
                 this.searchTerm = '';
@@ -455,33 +456,42 @@
                     if (message.isDraft && message.content.trim()) {
                         console.log('Generating completion for draft message:', message.content);
                         
-                        // Generate deterministic ID based on content (like Theater store)
-                        const messageId = await this.generateMessageId(message.content, message.role);
+                        // Set parent_id to current conversation head
+                        message.parent_id = this.headMessage?.id || null;
+                        
+                        // Generate deterministic ID based on content + parent (like Theater)
+                        const messageId = await this.generateMessageId(message.content, message.role, message.parent_id);
                         
                         // Convert draft to committed message
                         message.isDraft = false;
                         message.id = messageId;
                         message.element.classList.remove('draft-message');
                         
-                        // Store in our local message registry to prevent duplicates
-                        this.messageRegistry = this.messageRegistry || new Map();
-                        this.messageRegistry.set(messageId, message);
+                        // Add to message tree
+                        this.addToMessageTree(message);
+                        
+                        // Update conversation head
+                        this.headMessage = message;
                         
                         // Update ID display
                         const idDiv = message.element.querySelector('.message-id');
                         idDiv.textContent = `ID: ${message.id}`;
                         
-                        console.log('Generated message ID:', messageId, 'for content:', message.content);
+                        console.log('Generated message:', {
+                            id: messageId,
+                            content: message.content,
+                            parent_id: message.parent_id
+                        });
                         
-                        // Send to WebSocket with the predetermined ID
-                        this.sendMessageToServer(message.content, messageId);
+                        // Send to WebSocket with full message context
+                        this.sendMessageToServer(message.content, messageId, message.parent_id);
                         
                         // Exit to global mode after sending
                         this.exitToGlobalMode();
                     } else if (!message.isDraft) {
                         console.log('Regenerating completion for committed message:', message.id);
                         // Future: Trigger regeneration for any message (branching!)
-                        this.sendMessageToServer(message.content, message.id);
+                        this.sendMessageToServer(message.content, message.id, message.parent_id);
                     } else {
                         console.log('Cannot generate completion: message is empty');
                     }
@@ -489,11 +499,11 @@
             }
             
             // Generate deterministic ID like Theater's ContentRef::from_content
-            async generateMessageId(content, role) {
+            async generateMessageId(content, role, parentId = null) {
                 // Create a message structure exactly like what Theater stores
                 const messageData = {
                     id: null,
-                    parent_id: null, // We don't know parent yet
+                    parent_id: parentId,
                     entry: {
                         Message: {
                             role: role === 'user' ? 'User' : 'Assistant',
@@ -519,15 +529,46 @@
                 return hashHex;
             }
             
-            sendMessageToServer(content, messageId = null) {
+            // Add message to the parent-child tree structure
+            addToMessageTree(message) {
+                this.messageRegistry.set(message.id, message);
+                
+                // Add to parent's children list
+                if (message.parent_id) {
+                    if (!this.messageTree.has(message.parent_id)) {
+                        this.messageTree.set(message.parent_id, []);
+                    }
+                    this.messageTree.get(message.parent_id).push(message);
+                } else {
+                    // Root message - add to null parent
+                    if (!this.messageTree.has(null)) {
+                        this.messageTree.set(null, []);
+                    }
+                    this.messageTree.get(null).push(message);
+                }
+                
+                console.log('Added to message tree:', {
+                    id: message.id,
+                    parent_id: message.parent_id,
+                    content: message.content.substring(0, 50) + '...'
+                });
+            }
+            
+            // Check if message already exists in our tree
+            messageExistsInTree(messageId) {
+                return this.messageRegistry.has(messageId);
+            }
+            
+            sendMessageToServer(content, messageId = null, parentId = null) {
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     const message = {
                         type: 'send_message',
                         content: content,
-                        message_id: messageId // Include the predetermined ID
+                        message_id: messageId,
+                        parent_id: parentId
                     };
                     ws.send(JSON.stringify(message));
-                    console.log('Sent message to server:', content, 'with ID:', messageId);
+                    console.log('Sent message to server:', { content, messageId, parentId });
                 } else {
                     console.log('WebSocket not connected');
                 }
@@ -877,6 +918,7 @@
         class VimMessage {
             constructor(data) {
                 this.id = data.id;
+                this.parent_id = data.parent_id || null;
                 this.role = data.role;
                 // Always use extractDisplayText to get a proper string
                 this.content = this.extractDisplayText(data);
@@ -1148,9 +1190,12 @@
                     clearMessages();
                     if (data.messages.length > 0) {
                         addMessage('system', `Loaded ${data.messages.length} messages`);
-                        // Reset message registries when loading conversation state
+                        // Reset message tree when loading conversation state
                         vimChat.messageRegistry.clear();
-                        vimChat.contentRegistry.clear();
+                        vimChat.messageTree.clear();
+                        vimChat.headMessage = null;
+                        
+                        // Load messages in chronological order to build proper tree
                         data.messages.forEach(msg => displayMessage(msg));
                     } else {
                         showNewConversationPrompt();
@@ -1167,28 +1212,24 @@
         }
         
         function displayMessage(msg) {
-            // Check for duplicate using message ID OR content + role combination
-            const contentKey = `${msg.role}:${msg.display_text || msg.content}`;
-            
-            if (vimChat.messageRegistry && vimChat.messageRegistry.has(msg.id)) {
+            // Check if message already exists in our tree
+            if (vimChat.messageExistsInTree(msg.id)) {
                 console.log('Skipping duplicate message with ID:', msg.id);
-                return; // Skip duplicate by ID
+                return;
             }
             
-            if (vimChat.contentRegistry && vimChat.contentRegistry.has(contentKey)) {
-                console.log('Skipping duplicate message with content:', contentKey);
-                return; // Skip duplicate by content
+            // Add message to tree structure
+            vimChat.addToMessageTree(msg);
+            
+            // Update conversation head if this is the newest message
+            if (!msg.parent_id || msg.parent_id === vimChat.headMessage?.id) {
+                vimChat.headMessage = msg;
             }
             
+            // Create and display the message
             const vimMessage = vimChat.addMessage(msg);
             messagesEl.appendChild(vimMessage.element);
             messagesEl.scrollTop = messagesEl.scrollHeight;
-            
-            // Register both the message ID and content to prevent future duplicates
-            vimChat.messageRegistry = vimChat.messageRegistry || new Map();
-            vimChat.contentRegistry = vimChat.contentRegistry || new Map();
-            vimChat.messageRegistry.set(msg.id, vimMessage);
-            vimChat.contentRegistry.set(contentKey, vimMessage);
         }
         
         function getDisplayText(msg) {
@@ -1227,8 +1268,9 @@
             messagesEl.innerHTML = '';
             vimChat.messages = [];
             vimChat.selectedMessageIndex = -1;
-            vimChat.messageRegistry.clear(); // Clear duplicate detection registry
-            vimChat.contentRegistry.clear(); // Clear content registry
+            vimChat.messageRegistry.clear(); // Clear message registry
+            vimChat.messageTree.clear(); // Clear message tree
+            vimChat.headMessage = null; // Reset conversation head
         }
         
         function showNewConversationPrompt() {
