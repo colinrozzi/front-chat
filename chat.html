@@ -115,6 +115,38 @@
         .vim-message {
             transition: transform 0.1s ease-out, border-color 0.2s, box-shadow 0.2s;
         }
+        
+        /* Search Interface */
+        .search-input {
+            position: fixed;
+            bottom: 60px;
+            left: 10px;
+            right: 10px;
+            padding: 8px;
+            border: 2px solid #FFA500;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            background: white;
+            z-index: 1000;
+            outline: none;
+        }
+        
+        .search-input:focus {
+            border-color: #FF8C00;
+            box-shadow: 0 0 0 2px rgba(255, 165, 0, 0.2);
+        }
+        
+        .search-match {
+            background: rgba(255, 255, 0, 0.3) !important;
+            border-color: #FFD700 !important;
+        }
+        
+        .search-current {
+            background: rgba(255, 165, 0, 0.4) !important;
+            border-color: #FFA500 !important;
+            box-shadow: 0 0 0 2px #FFA500 !important;
+        }
     </style>
 </head>
 <body>
@@ -158,6 +190,17 @@
                 this.messages = [];
                 this.commandBuffer = '';
                 
+                // Search functionality
+                this.searchTerm = '';
+                this.searchResults = [];
+                this.searchIndex = -1;
+                this.searchInput = null;
+                
+                // Undo/Redo system
+                this.undoStack = [];
+                this.redoStack = [];
+                this.clipboard = '';
+                
                 // Add mode indicator to status
                 this.modeIndicator = this.createModeIndicator();
                 
@@ -182,7 +225,8 @@
                 const colors = {
                     'GLOBAL': '#666',
                     'MESSAGE': '#4A90E2', 
-                    'EDITING': '#7ED321'
+                    'EDITING': '#7ED321',
+                    'SEARCH': '#FFA500'
                 };
                 this.modeIndicator.style.color = colors[this.mode] || '#666';
             }
@@ -204,12 +248,18 @@
                             return this.handleMessageCommand(event);
                         case 'EDITING': 
                             return this.handleEditingCommand(event);
+                        case 'SEARCH':
+                            return this.handleSearchCommand(event);
                     }
                 }
             }
             
             isVimCommand(key, event) {
-                const vimKeys = ['j', 'k', 'i', 'a', 'I', 'A', 'o', 'O', 'Enter', 'Escape', 'h', 'l', 'g', 'G', 'd', 'y', 'p', 'x', 'r', 'w', 'b'];
+                const vimKeys = ['j', 'k', 'i', 'a', 'I', 'A', 'o', 'O', 'Enter', 'Escape', 'h', 'l', 'g', 'G', 'd', 'y', 'p', 'x', 'r', 'w', 'b', '/', '?', 'n', 'N', 'u', 'z'];
+                // Special handling for search mode
+                if (this.mode === 'SEARCH') {
+                    return true; // In search mode, handle all keys
+                }
                 return vimKeys.includes(key) && !event.ctrlKey && !event.metaKey;
             }
             
@@ -253,6 +303,24 @@
                             this.commandBuffer = 'd';
                             setTimeout(() => this.commandBuffer = '', 1000);
                         }
+                        break;
+                    case '/':
+                        this.startSearch(false); // forward search
+                        break;
+                    case '?':
+                        this.startSearch(true); // backward search
+                        break;
+                    case 'n':
+                        this.findNext();
+                        break;
+                    case 'N':
+                        this.findPrevious();
+                        break;
+                    case 'u':
+                        this.undo();
+                        break;
+                    case 'z':
+                        // Handle 'zz' for center screen (future feature)
                         break;
                 }
             }
@@ -327,6 +395,77 @@
                     case 'l':
                         this.moveWithinMessage('right');
                         break;
+                    case 'x':
+                        this.deleteCharacter();
+                        break;
+                    case 'd':
+                        // Handle 'dd' for delete line
+                        if (this.commandBuffer === 'd') {
+                            this.deleteLine();
+                            this.commandBuffer = '';
+                        } else {
+                            this.commandBuffer = 'd';
+                            setTimeout(() => this.commandBuffer = '', 1000);
+                        }
+                        break;
+                    case 'y':
+                        // Handle 'yy' for yank (copy) line
+                        if (this.commandBuffer === 'y') {
+                            this.yankLine();
+                            this.commandBuffer = '';
+                        } else {
+                            this.commandBuffer = 'y';
+                            setTimeout(() => this.commandBuffer = '', 1000);
+                        }
+                        break;
+                    case 'p':
+                        this.paste();
+                        break;
+                }
+            }
+            
+            deleteCharacter() {
+                if (this.selectedMessageIndex >= 0) {
+                    const message = this.messages[this.selectedMessageIndex];
+                    if (message.content.length > 0) {
+                        message.content = message.content.slice(0, -1); // Remove last character
+                        message.updateContentDisplay();
+                        console.log('Deleted character');
+                    }
+                }
+            }
+            
+            deleteLine() {
+                if (this.selectedMessageIndex >= 0) {
+                    const message = this.messages[this.selectedMessageIndex];
+                    const lines = message.content.split('\n');
+                    if (lines.length > 1) {
+                        lines.pop(); // Remove last line
+                        message.content = lines.join('\n');
+                        message.updateContentDisplay();
+                        console.log('Deleted line');
+                    } else {
+                        message.content = ''; // Clear entire message if only one line
+                        message.updateContentDisplay();
+                        console.log('Cleared message');
+                    }
+                }
+            }
+            
+            yankLine() {
+                if (this.selectedMessageIndex >= 0) {
+                    const message = this.messages[this.selectedMessageIndex];
+                    this.clipboard = message.content;
+                    console.log('Yanked message content to clipboard');
+                }
+            }
+            
+            paste() {
+                if (this.selectedMessageIndex >= 0 && this.clipboard) {
+                    const message = this.messages[this.selectedMessageIndex];
+                    message.content += '\n' + this.clipboard;
+                    message.updateContentDisplay();
+                    console.log('Pasted from clipboard');
                 }
             }
             
@@ -345,6 +484,12 @@
                         this.exitEditMode(true); // save changes
                         break;
                 }
+            }
+            
+            handleSearchCommand(event) {
+                // Search mode is handled by the search input element
+                // This is just a placeholder in case we need global search commands
+                console.log(`SEARCH command: ${event.key}`);
             }
             
             selectNextMessage() {
@@ -445,6 +590,147 @@
                 }
                 
                 return message;
+            }
+            
+            // Search System
+            startSearch(backward = false) {
+                console.log(`Starting ${backward ? 'backward' : 'forward'} search`);
+                
+                this.mode = 'SEARCH';
+                this.updateModeIndicator();
+                
+                // Create search input
+                this.searchInput = document.createElement('input');
+                this.searchInput.type = 'text';
+                this.searchInput.className = 'search-input';
+                this.searchInput.placeholder = `Search ${backward ? 'backward' : 'forward'}...`;
+                
+                // Position search input at bottom
+                document.body.appendChild(this.searchInput);
+                this.searchInput.focus();
+                
+                // Handle search input events
+                this.searchInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        this.executeSearch(this.searchInput.value, backward);
+                        this.exitSearch();
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        this.exitSearch();
+                    }
+                });
+                
+                // Real-time search preview
+                this.searchInput.addEventListener('input', (e) => {
+                    this.previewSearch(e.target.value);
+                });
+            }
+            
+            executeSearch(term, backward = false) {
+                if (!term.trim()) return;
+                
+                this.searchTerm = term;
+                this.searchResults = [];
+                
+                // Search through all messages
+                this.messages.forEach((message, index) => {
+                    if (message.content.toLowerCase().includes(term.toLowerCase())) {
+                        this.searchResults.push({
+                            messageIndex: index,
+                            message: message
+                        });
+                    }
+                });
+                
+                console.log(`Found ${this.searchResults.length} matches for "${term}"`);
+                
+                if (this.searchResults.length > 0) {
+                    this.searchIndex = backward ? this.searchResults.length - 1 : 0;
+                    this.goToSearchResult();
+                } else {
+                    console.log('No matches found');
+                }
+            }
+            
+            findNext() {
+                if (this.searchResults.length === 0) {
+                    console.log('No search results');
+                    return;
+                }
+                
+                this.searchIndex = (this.searchIndex + 1) % this.searchResults.length;
+                this.goToSearchResult();
+                console.log(`Next match: ${this.searchIndex + 1}/${this.searchResults.length}`);
+            }
+            
+            findPrevious() {
+                if (this.searchResults.length === 0) {
+                    console.log('No search results');
+                    return;
+                }
+                
+                this.searchIndex = (this.searchIndex - 1 + this.searchResults.length) % this.searchResults.length;
+                this.goToSearchResult();
+                console.log(`Previous match: ${this.searchIndex + 1}/${this.searchResults.length}`);
+            }
+            
+            goToSearchResult() {
+                if (this.searchIndex >= 0 && this.searchIndex < this.searchResults.length) {
+                    const result = this.searchResults[this.searchIndex];
+                    this.selectMessage(result.messageIndex);
+                    
+                    // Highlight the current match
+                    this.clearSearchHighlights();
+                    result.message.element.classList.add('search-current');
+                }
+            }
+            
+            previewSearch(term) {
+                // Remove previous highlights
+                this.clearSearchHighlights();
+                
+                if (!term.trim()) return;
+                
+                // Highlight matches in real-time
+                this.messages.forEach((message) => {
+                    if (message.content.toLowerCase().includes(term.toLowerCase())) {
+                        message.element.classList.add('search-match');
+                    }
+                });
+            }
+            
+            clearSearchHighlights() {
+                this.messages.forEach((message) => {
+                    message.element.classList.remove('search-match', 'search-current');
+                });
+            }
+            
+            exitSearch() {
+                if (this.searchInput) {
+                    this.searchInput.remove();
+                    this.searchInput = null;
+                }
+                
+                this.clearSearchHighlights();
+                this.mode = 'GLOBAL';
+                this.updateModeIndicator();
+                console.log('Exited search mode');
+            }
+            
+            // Undo System
+            undo() {
+                // Simple undo for message editing
+                if (this.selectedMessageIndex >= 0 && this.messages[this.selectedMessageIndex]) {
+                    const message = this.messages[this.selectedMessageIndex];
+                    if (message.content !== message.originalContent) {
+                        message.content = message.originalContent;
+                        message.updateContentDisplay();
+                        console.log('Undid message changes');
+                    } else {
+                        console.log('Nothing to undo for this message');
+                    }
+                }
             }
         }
         
