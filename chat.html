@@ -25,24 +25,7 @@
             padding: 10px; 
             margin-bottom: 10px; 
         }
-        .input-bar {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: white;
-            border-top: 1px solid #ccc;
-            padding: 10px;
-            display: flex;
-            gap: 10px;
-        }
-        #input { 
-            flex: 1;
-            padding: 5px; 
-        }
-        #send { 
-            padding: 5px 10px; 
-        }
+        /* Input bar styles removed - using message components */
         .message { 
             margin: 5px 0; 
             padding: 5px; 
@@ -147,6 +130,22 @@
             border-color: #FFA500 !important;
             box-shadow: 0 0 0 2px #FFA500 !important;
         }
+        
+        /* Draft Message Styles */
+        .draft-message {
+            border: 2px dashed #9CA3AF !important;
+            background: rgba(156, 163, 175, 0.05) !important;
+        }
+        
+        .draft-message.selected {
+            border: 2px dashed #4A90E2 !important;
+            background: rgba(74, 144, 226, 0.1) !important;
+        }
+        
+        .draft-message .message-id {
+            color: #9CA3AF;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -165,11 +164,7 @@
         </div>
     </div>
     
-    <!-- Input Bar (Fixed at Bottom) -->
-    <div class="input-bar">
-        <input type="text" id="input" placeholder="Type your message..." />
-        <button id="send">Send</button>
-    </div>
+    <!-- Input bar removed - now using message components -->
     
     <script>
         let ws = null;
@@ -178,8 +173,6 @@
         
         const statusEl = document.getElementById('connectionStatus');
         const messagesEl = document.getElementById('messages');
-        const inputEl = document.getElementById('input');
-        const sendBtn = document.getElementById('send');
         const conversationIdEl = document.getElementById('conversationId');
         
         // Vim Chat Interface
@@ -232,8 +225,8 @@
             }
             
             handleKeydown(event) {
-                // Don't interfere with editing mode in the input bar
-                if (event.target === inputEl) {
+                // Don't interfere with editing mode in textareas or search input
+                if (event.target.tagName === 'TEXTAREA' || event.target.className === 'search-input') {
                     return;
                 }
                 
@@ -421,7 +414,74 @@
                     case 'p':
                         this.paste();
                         break;
+                    case 'Enter':
+                        // Generate completion for current message
+                        this.generateCompletion();
+                        break;
                 }
+            }
+            
+            generateCompletion() {
+                if (this.selectedMessageIndex >= 0) {
+                    const message = this.messages[this.selectedMessageIndex];
+                    
+                    if (message.isDraft && message.content.trim()) {
+                        console.log('Generating completion for draft message:', message.content);
+                        
+                        // Convert draft to committed message
+                        message.isDraft = false;
+                        message.id = `msg_${Date.now()}`;
+                        message.element.classList.remove('draft-message');
+                        
+                        // Update ID display
+                        const idDiv = message.element.querySelector('.message-id');
+                        idDiv.textContent = `ID: ${message.id}`;
+                        
+                        // Send to WebSocket (simulate the old sendUserMessage)
+                        this.sendMessageToServer(message.content);
+                        
+                        // Create new draft message for next input
+                        this.createNewDraftMessage();
+                    } else if (!message.isDraft) {
+                        console.log('Regenerating completion for committed message:', message.id);
+                        // Future: Trigger regeneration for any message (branching!)
+                        this.sendMessageToServer(message.content);
+                    } else {
+                        console.log('Cannot generate completion: message is empty');
+                    }
+                }
+            }
+            
+            sendMessageToServer(content) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    const message = {
+                        type: 'send_message',
+                        content: content
+                    };
+                    ws.send(JSON.stringify(message));
+                    console.log('Sent message to server:', content);
+                } else {
+                    console.log('WebSocket not connected');
+                }
+            }
+            
+            createNewDraftMessage() {
+                const draftData = {
+                    id: `draft_${Date.now()}`,
+                    role: 'user',
+                    content: '',
+                    display_text: ''
+                };
+                
+                const draftMessage = this.addMessage(draftData);
+                messagesEl.appendChild(draftMessage.element);
+                
+                // Auto-select the new draft and enter editing mode
+                this.selectMessage(this.messages.length - 1);
+                this.enterMessageMode();
+                this.enterEditMode('insert');
+                
+                return draftMessage;
             }
             
             deleteCharacter() {
@@ -575,9 +635,8 @@
             }
             
             createNewMessage() {
-                console.log('Creating new message');
-                // Focus the input bar for now
-                inputEl.focus();
+                console.log('Creating new draft message');
+                this.createNewDraftMessage();
             }
             
             addMessage(messageData) {
@@ -743,6 +802,7 @@
                 this.content = this.extractDisplayText(data);
                 this.originalContent = this.content; // Store original for cancel
                 this.isEditing = false;
+                this.isDraft = !data.id || data.id.startsWith('draft_'); // Draft if no real ID
                 this.cursorPosition = { line: 0, col: 0 };
                 this.element = this.createElement();
                 this.textarea = null;
@@ -777,17 +837,21 @@
             
             createElement() {
                 const div = document.createElement('div');
-                div.className = `message ${this.role} vim-message`;
+                let className = `message ${this.role} vim-message`;
+                if (this.isDraft) {
+                    className += ' draft-message';
+                }
+                div.className = className;
                 
                 // Create message ID element
                 const idDiv = document.createElement('div');
                 idDiv.className = 'message-id';
-                idDiv.textContent = `ID: ${this.id}`;
+                idDiv.textContent = this.isDraft ? `DRAFT: ${this.role}` : `ID: ${this.id}`;
                 
                 // Create message content element
                 const contentDiv = document.createElement('div');
                 contentDiv.className = 'message-content';
-                contentDiv.textContent = this.content;
+                contentDiv.textContent = this.content || '[Empty message - press i to edit]';
                 
                 div.appendChild(idDiv);
                 div.appendChild(contentDiv);
@@ -1054,27 +1118,32 @@
             }
         }
         
-        function sendUserMessage() {
-            const text = inputEl.value.trim();
-            if (text && ws && ws.readyState === WebSocket.OPEN) {
-                sendMessage({
-                    type: 'send_message',
-                    content: text
-                });
-                inputEl.value = '';
-            }
+        // sendUserMessage removed - now using vim message components
+        
+        // Initialize with a draft message
+        function initializeInterface() {
+            // Create initial draft message
+            const initialDraft = {
+                id: 'draft_initial',
+                role: 'user',
+                content: '',
+                display_text: ''
+            };
+            
+            const draftMessage = vimChat.addMessage(initialDraft);
+            messagesEl.appendChild(draftMessage.element);
+            
+            // Auto-select and enter editing mode
+            vimChat.selectMessage(0);
+            vimChat.enterMessageMode();
+            vimChat.enterEditMode('insert');
         }
         
-        // Event listeners
-        sendBtn.addEventListener('click', sendUserMessage);
-        inputEl.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                sendUserMessage();
-            }
-        });
-        
-        // Start connection
+        // Start connection and initialize
         connect();
+        
+        // Initialize interface after a short delay to ensure everything is loaded
+        setTimeout(initializeInterface, 100);
     </script>
 </body>
 </html>
