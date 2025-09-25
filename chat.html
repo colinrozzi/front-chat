@@ -1,79 +1,92 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <meta charset="UTF-8">
     <title>Minimal Chat</title>
     <style>
-        body { 
-            font-family: monospace; 
-            margin: 0; 
+        body {
+            font-family: monospace;
+            margin: 0;
             height: 100vh;
             display: flex;
             flex-direction: column;
         }
-        .content { 
+
+        .content {
             flex: 1;
             padding: 10px;
             overflow: hidden;
             display: flex;
             flex-direction: column;
         }
-        #messages { 
-            border: 1px solid #ccc; 
+
+        #messages {
+            border: 1px solid #ccc;
             flex: 1;
-            overflow-y: auto; 
-            padding: 10px; 
-            margin-bottom: 10px; 
+            overflow-y: auto;
+            padding: 10px;
+            margin-bottom: 10px;
         }
+
         /* Input bar styles removed - using message components */
-        .message { 
-            margin: 5px 0; 
-            padding: 5px; 
+        .message {
+            margin: 5px 0;
+            padding: 5px;
             border-bottom: 1px dotted #eee;
             white-space: pre-wrap;
             word-wrap: break-word;
         }
+
         .message-content {
             white-space: pre-wrap;
             word-wrap: break-word;
         }
 
-        .status { font-size: 12px; color: #666; }
-        .message-id { font-size: 10px; color: #999; font-family: monospace; }
-        
+        .status {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .message-id {
+            font-size: 10px;
+            color: #999;
+            font-family: monospace;
+        }
+
         /* Vim Interface Styles */
         .vim-message {
             transition: border-color 0.2s, box-shadow 0.2s;
             border: 1px solid transparent;
             cursor: pointer;
         }
-        
+
         .vim-message.selected {
             border: 2px solid #4A90E2;
             box-shadow: 0 0 0 1px #4A90E2;
             background: rgba(74, 144, 226, 0.05);
         }
-        
+
         .vim-message.message-mode {
             border: 2px solid #4A90E2;
             box-shadow: 0 0 0 1px #4A90E2, inset 0 0 0 1px #4A90E2;
             background: rgba(74, 144, 226, 0.1);
         }
-        
+
         .vim-message.editing {
             border: 2px solid #7ED321;
             box-shadow: 0 0 0 1px #7ED321;
             background: rgba(126, 211, 33, 0.05);
         }
-        
+
         #modeIndicator {
             font-family: monospace;
             font-size: 11px;
             padding: 2px 4px;
-            background: rgba(0,0,0,0.1);
+            background: rgba(0, 0, 0, 0.1);
             border-radius: 2px;
         }
-        
+
         /* Editing Interface */
         .edit-textarea {
             width: 100%;
@@ -88,17 +101,17 @@
             white-space: pre-wrap;
             word-wrap: break-word;
         }
-        
+
         .edit-textarea:focus {
             border-color: #7ED321;
             box-shadow: 0 0 0 2px rgba(126, 211, 33, 0.2);
         }
-        
+
         /* Cursor movement feedback */
         .vim-message {
             transition: transform 0.1s ease-out, border-color 0.2s, box-shadow 0.2s;
         }
-        
+
         /* Search Interface */
         .search-input {
             position: fixed;
@@ -114,40 +127,41 @@
             z-index: 1000;
             outline: none;
         }
-        
+
         .search-input:focus {
             border-color: #FF8C00;
             box-shadow: 0 0 0 2px rgba(255, 165, 0, 0.2);
         }
-        
+
         .search-match {
             background: rgba(255, 255, 0, 0.3) !important;
             border-color: #FFD700 !important;
         }
-        
+
         .search-current {
             background: rgba(255, 165, 0, 0.4) !important;
             border-color: #FFA500 !important;
             box-shadow: 0 0 0 2px #FFA500 !important;
         }
-        
+
         /* Draft Message Styles */
         .draft-message {
             border: 2px dashed #9CA3AF !important;
             background: rgba(156, 163, 175, 0.05) !important;
         }
-        
+
         .draft-message.selected {
             border: 2px dashed #4A90E2 !important;
             background: rgba(74, 144, 226, 0.1) !important;
         }
-        
+
         .draft-message .message-id {
             color: #9CA3AF;
             font-style: italic;
         }
     </style>
 </head>
+
 <body>
     <div class="content">
         <!-- Status Info -->
@@ -155,26 +169,26 @@
             Status: <span id="connectionStatus">Connecting...</span><br>
             Conversation ID: <span id="conversationId">-</span>
         </div>
-        
+
         <hr>
-        
+
         <!-- Messages -->
         <div id="messages">
             <div class="status">Waiting for connection...</div>
         </div>
     </div>
-    
+
     <!-- Input bar removed - now using message components -->
-    
+
     <script>
         let ws = null;
         let conversationId = null;
         let chatStateActor = null;
-        
+
         const statusEl = document.getElementById('connectionStatus');
         const messagesEl = document.getElementById('messages');
         const conversationIdEl = document.getElementById('conversationId');
-        
+
         // Vim Chat Interface
         class VimChatInterface {
             constructor() {
@@ -185,27 +199,27 @@
                 this.messageRegistry = new Map(); // ID → message object
                 this.messageTree = new Map(); // parent_id → [child_messages]
                 this.headMessage = null; // Current conversation head
-                
+
                 // Search functionality
                 this.searchTerm = '';
                 this.searchResults = [];
                 this.searchIndex = -1;
                 this.searchInput = null;
-                
+
                 // Undo/Redo system
                 this.undoStack = [];
                 this.redoStack = [];
                 this.clipboard = '';
-                
+
                 // Add mode indicator to status
                 this.modeIndicator = this.createModeIndicator();
-                
+
                 // Global event listener
                 document.addEventListener('keydown', this.handleKeydown.bind(this));
-                
+
                 console.log('VimChat initialized in GLOBAL mode');
             }
-            
+
             createModeIndicator() {
                 const indicator = document.createElement('span');
                 indicator.id = 'modeIndicator';
@@ -215,70 +229,70 @@
                 statusEl.parentElement.appendChild(indicator);
                 return indicator;
             }
-            
+
             updateModeIndicator() {
                 const modeTexts = {
                     'GLOBAL': 'GLOBAL (j/k:nav, o:new, Enter:select)',
-                    'MESSAGE': 'MESSAGE (i:edit, Enter:send, Esc:back)', 
+                    'MESSAGE': 'MESSAGE (i:edit, Enter:send, Esc:back)',
                     'EDITING': 'EDITING (Cmd+Enter:send, Esc:save)',
                     'SEARCH': 'SEARCH'
                 };
-                
+
                 this.modeIndicator.textContent = modeTexts[this.mode] || this.mode;
                 const colors = {
                     'GLOBAL': '#666',
-                    'MESSAGE': '#4A90E2', 
+                    'MESSAGE': '#4A90E2',
                     'EDITING': '#7ED321',
                     'SEARCH': '#FFA500'
                 };
                 this.modeIndicator.style.color = colors[this.mode] || '#666';
             }
-            
+
             handleKeydown(event) {
                 // Don't interfere with editing mode in textareas or search input
                 if (event.target.tagName === 'TEXTAREA' || event.target.className === 'search-input') {
                     return;
                 }
-                
+
                 // Check if this is a vim command
                 if (this.isVimCommand(event.key, event)) {
                     event.preventDefault();
-                    
-                    switch(this.mode) {
-                        case 'GLOBAL': 
+
+                    switch (this.mode) {
+                        case 'GLOBAL':
                             return this.handleGlobalCommand(event);
-                        case 'MESSAGE': 
+                        case 'MESSAGE':
                             return this.handleMessageCommand(event);
-                        case 'EDITING': 
+                        case 'EDITING':
                             return this.handleEditingCommand(event);
                         case 'SEARCH':
                             return this.handleSearchCommand(event);
                     }
                 }
             }
-            
+
             isVimCommand(key, event) {
                 const vimKeys = ['j', 'k', 'i', 'a', 'I', 'A', 'o', 'O', 'Enter', 'Escape', 'h', 'l', 'g', 'G', 'd', 'y', 'p', 'x', 'r', 'w', 'b', '/', '?', 'n', 'N', 'u', 'z'];
-                
+
                 // Special handling for search mode
                 if (this.mode === 'SEARCH') {
                     return true; // In search mode, handle all keys
                 }
-                
+
                 // Special handling for Enter key
                 if (key === 'Enter') {
                     // Only treat as vim command if Cmd/Ctrl is held (for sending)
                     // or if we're not in editing mode
                     return (event.metaKey || event.ctrlKey) || this.mode !== 'EDITING';
                 }
-                
+
                 return vimKeys.includes(key) && !event.ctrlKey && !event.metaKey;
             }
-            
+
             handleGlobalCommand(event) {
                 console.log(`GLOBAL command: ${event.key}`);
-                
-                switch(event.key) {
+
+                switch (event.key) {
                     case 'j':
                         this.selectNextMessage();
                         break;
@@ -342,29 +356,29 @@
                         break;
                 }
             }
-            
+
             goToFirstMessage() {
                 if (this.messages.length > 0) {
                     this.selectMessage(0);
                 }
             }
-            
+
             goToLastMessage() {
                 if (this.messages.length > 0) {
                     this.selectMessage(this.messages.length - 1);
                 }
             }
-            
+
             deleteCurrentMessage() {
                 if (this.selectedMessageIndex >= 0 && this.messages[this.selectedMessageIndex]) {
                     console.log(`Deleting message ${this.selectedMessageIndex}`);
-                    
+
                     // Remove from DOM
                     this.messages[this.selectedMessageIndex].element.remove();
-                    
+
                     // Remove from array
                     this.messages.splice(this.selectedMessageIndex, 1);
-                    
+
                     // Adjust selection
                     if (this.messages.length === 0) {
                         this.selectedMessageIndex = -1;
@@ -375,11 +389,11 @@
                     }
                 }
             }
-            
+
             handleMessageCommand(event) {
                 console.log(`MESSAGE command: ${event.key}`);
-                
-                switch(event.key) {
+
+                switch (event.key) {
                     case 'Escape':
                         this.exitToGlobalMode();
                         break;
@@ -448,44 +462,44 @@
                         break;
                 }
             }
-            
+
             async generateCompletion() {
                 if (this.selectedMessageIndex >= 0) {
                     const message = this.messages[this.selectedMessageIndex];
-                    
+
                     if (message.isDraft && message.content.trim()) {
                         console.log('Generating completion for draft message:', message.content);
-                        
+
                         // Set parent_id to current conversation head
                         message.parent_id = this.headMessage?.id || null;
-                        
+
                         // Generate deterministic ID based on content + parent (like Theater)
                         const messageId = await this.generateMessageId(message.content, message.role, message.parent_id);
-                        
+
                         // Convert draft to committed message
                         message.isDraft = false;
                         message.id = messageId;
                         message.element.classList.remove('draft-message');
-                        
+
                         // Add to message tree
                         this.addToMessageTree(message);
-                        
+
                         // Update conversation head
                         this.headMessage = message;
-                        
+
                         // Update ID display
                         const idDiv = message.element.querySelector('.message-id');
                         idDiv.textContent = `ID: ${message.id}`;
-                        
+
                         console.log('Generated message:', {
                             id: messageId,
                             content: message.content,
                             parent_id: message.parent_id
                         });
-                        
+
                         // Send to WebSocket with full message context
                         this.sendMessageToServer(message.content, messageId, message.parent_id);
-                        
+
                         // Exit to global mode after sending
                         this.exitToGlobalMode();
                     } else if (!message.isDraft) {
@@ -497,7 +511,7 @@
                     }
                 }
             }
-            
+
             // Generate deterministic ID like Theater's ContentRef::from_content
             async generateMessageId(content, role, parentId = null) {
                 // Create a message structure exactly like what Theater stores
@@ -507,18 +521,18 @@
                     entry: {
                         Message: {
                             role: role === 'user' ? 'User' : 'Assistant',
-                            content: [{ Text: content }]
+                            content: [{Text: content}]
                         }
                     }
                 };
-                
+
                 // Serialize deterministically (same as Theater)
                 const serialized = JSON.stringify(messageData);
-                
+
                 // Generate SHA-1 hash using Web Crypto API (same as Theater)
                 return await this.sha1Hash(serialized);
             }
-            
+
             // Real SHA-1 hash function using Web Crypto API
             async sha1Hash(message) {
                 const encoder = new TextEncoder();
@@ -528,11 +542,11 @@
                 const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
                 return hashHex;
             }
-            
+
             // Add message to the parent-child tree structure
             addToMessageTree(message) {
                 this.messageRegistry.set(message.id, message);
-                
+
                 // Add to parent's children list
                 if (message.parent_id) {
                     if (!this.messageTree.has(message.parent_id)) {
@@ -546,7 +560,7 @@
                     }
                     this.messageTree.get(null).push(message);
                 }
-                
+
                 const contentPreview = (() => {
                     try {
                         const content = message.content || '[empty]';
@@ -556,19 +570,19 @@
                         return '[preview error]';
                     }
                 })();
-                
+
                 console.log('Added to message tree:', {
                     id: message.id,
                     parent_id: message.parent_id,
                     content: contentPreview
                 });
             }
-            
+
             // Check if message already exists in our tree
             messageExistsInTree(messageId) {
                 return this.messageRegistry.has(messageId);
             }
-            
+
             sendMessageToServer(content, messageId = null, parentId = null) {
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     const message = {
@@ -578,12 +592,12 @@
                         parent_id: parentId
                     };
                     ws.send(JSON.stringify(message));
-                    console.log('Sent message to server:', { content, messageId, parentId });
+                    console.log('Sent message to server:', {content, messageId, parentId});
                 } else {
                     console.log('WebSocket not connected');
                 }
             }
-            
+
             createNewDraftMessage() {
                 const draftData = {
                     id: `draft_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -591,32 +605,31 @@
                     content: '',
                     display_text: ''
                 };
-                
+
                 const draftMessage = this.addMessage(draftData);
                 messagesEl.appendChild(draftMessage.element);
-                
+
                 // Auto-select the new draft and enter editing mode
                 this.selectMessage(this.messages.length - 1);
                 this.enterMessageMode();
                 this.enterEditMode('insert');
-                
+
                 // Scroll to the bottom to show the new draft
                 messagesEl.scrollTop = messagesEl.scrollHeight;
-                
+
                 return draftMessage;
             }
-            
+
             deleteCharacter() {
                 if (this.selectedMessageIndex >= 0) {
                     const message = this.messages[this.selectedMessageIndex];
                     if (message.content.length > 0) {
                         message.content = message.content.slice(0, -1); // Remove last character
                         message.updateContentDisplay();
-                        console.log('Deleted character');
                     }
                 }
             }
-            
+
             deleteLine() {
                 if (this.selectedMessageIndex >= 0) {
                     const message = this.messages[this.selectedMessageIndex];
@@ -625,15 +638,13 @@
                         lines.pop(); // Remove last line
                         message.content = lines.join('\n');
                         message.updateContentDisplay();
-                        console.log('Deleted line');
                     } else {
                         message.content = ''; // Clear entire message if only one line
                         message.updateContentDisplay();
-                        console.log('Cleared message');
                     }
                 }
             }
-            
+
             yankLine() {
                 if (this.selectedMessageIndex >= 0) {
                     const message = this.messages[this.selectedMessageIndex];
@@ -641,7 +652,7 @@
                     console.log('Yanked message content to clipboard');
                 }
             }
-            
+
             paste() {
                 if (this.selectedMessageIndex >= 0 && this.clipboard) {
                     const message = this.messages[this.selectedMessageIndex];
@@ -650,115 +661,114 @@
                     console.log('Pasted from clipboard');
                 }
             }
-            
+
             moveWithinMessage(direction) {
                 const message = this.messages[this.selectedMessageIndex];
                 if (message) {
                     message.moveCursor(direction);
                 }
             }
-            
+
             handleEditingCommand(event) {
-                console.log(`EDITING command: ${event.key}`);
-                
-                switch(event.key) {
+
+                switch (event.key) {
                     case 'Escape':
                         this.exitEditMode(true); // save changes
                         break;
                 }
             }
-            
+
             handleSearchCommand(event) {
                 // Search mode is handled by the search input element
                 // This is just a placeholder in case we need global search commands
                 console.log(`SEARCH command: ${event.key}`);
             }
-            
+
             selectNextMessage() {
                 if (this.messages.length === 0) return;
-                
+
                 const newIndex = Math.min(this.selectedMessageIndex + 1, this.messages.length - 1);
                 this.selectMessage(newIndex);
             }
-            
+
             selectPrevMessage() {
                 if (this.messages.length === 0) return;
-                
+
                 const newIndex = Math.max(this.selectedMessageIndex - 1, 0);
                 this.selectMessage(newIndex);
             }
-            
+
             selectMessage(index) {
                 // Remove previous selection
                 if (this.selectedMessageIndex >= 0 && this.messages[this.selectedMessageIndex]) {
                     this.messages[this.selectedMessageIndex].element.classList.remove('selected');
                 }
-                
+
                 // Set new selection
                 this.selectedMessageIndex = index;
                 if (this.messages[index]) {
                     this.messages[index].element.classList.add('selected');
-                    this.messages[index].element.scrollIntoView({ 
-                        behavior: 'smooth', 
-                        block: 'center' 
+                    this.messages[index].element.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center'
                     });
                 }
-                
+
                 console.log(`Selected message ${index}`);
             }
-            
+
             enterMessageMode() {
                 this.mode = 'MESSAGE';
                 this.updateModeIndicator();
-                
+
                 if (this.messages[this.selectedMessageIndex]) {
                     this.messages[this.selectedMessageIndex].element.classList.add('message-mode');
                 }
-                
+
                 console.log('Entered MESSAGE mode');
             }
-            
+
             exitToGlobalMode() {
                 // Remove message mode styling
                 if (this.selectedMessageIndex >= 0 && this.messages[this.selectedMessageIndex]) {
                     this.messages[this.selectedMessageIndex].element.classList.remove('message-mode');
                 }
-                
+
                 this.mode = 'GLOBAL';
                 this.updateModeIndicator();
                 console.log('Returned to GLOBAL mode');
             }
-            
+
             enterEditMode(insertType) {
                 if (this.selectedMessageIndex < 0 || !this.messages[this.selectedMessageIndex]) {
                     return;
                 }
-                
+
                 console.log(`Entering EDITING mode: ${insertType}`);
-                
+
                 const message = this.messages[this.selectedMessageIndex];
                 message.enterEditMode(insertType);
-                
+
                 this.mode = 'EDITING';
                 this.editingMessage = message;
                 this.updateModeIndicator();
             }
-            
+
             exitEditMode(save) {
                 console.log(`Exiting EDITING mode, save: ${save}`);
-                
+
                 if (this.editingMessage) {
                     this.editingMessage.exitEditMode(save);
                     this.editingMessage = null;
                 }
-                
+
                 this.mode = 'MESSAGE';
                 this.updateModeIndicator();
             }
-            
+
             createNewMessage() {
                 console.log('Creating new draft message');
-                
+
                 // Clear the new conversation prompt if it exists
                 const statusElements = messagesEl.querySelectorAll('.status');
                 statusElements.forEach(el => {
@@ -766,39 +776,39 @@
                         el.remove();
                     }
                 });
-                
+
                 this.createNewDraftMessage();
             }
-            
+
             addMessage(messageData) {
                 const message = new VimMessage(messageData);
                 this.messages.push(message);
-                
+
                 // Auto-select first message if none selected
                 if (this.selectedMessageIndex === -1 && this.messages.length === 1) {
                     this.selectMessage(0);
                 }
-                
+
                 return message;
             }
-            
+
             // Search System
             startSearch(backward = false) {
                 console.log(`Starting ${backward ? 'backward' : 'forward'} search`);
-                
+
                 this.mode = 'SEARCH';
                 this.updateModeIndicator();
-                
+
                 // Create search input
                 this.searchInput = document.createElement('input');
                 this.searchInput.type = 'text';
                 this.searchInput.className = 'search-input';
                 this.searchInput.placeholder = `Search ${backward ? 'backward' : 'forward'}...`;
-                
+
                 // Position search input at bottom
                 document.body.appendChild(this.searchInput);
                 this.searchInput.focus();
-                
+
                 // Handle search input events
                 this.searchInput.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter') {
@@ -810,19 +820,19 @@
                         this.exitSearch();
                     }
                 });
-                
+
                 // Real-time search preview
                 this.searchInput.addEventListener('input', (e) => {
                     this.previewSearch(e.target.value);
                 });
             }
-            
+
             executeSearch(term, backward = false) {
                 if (!term.trim()) return;
-                
+
                 this.searchTerm = term;
                 this.searchResults = [];
-                
+
                 // Search through all messages
                 this.messages.forEach((message, index) => {
                     if (message.content.toLowerCase().includes(term.toLowerCase())) {
@@ -832,9 +842,9 @@
                         });
                     }
                 });
-                
+
                 console.log(`Found ${this.searchResults.length} matches for "${term}"`);
-                
+
                 if (this.searchResults.length > 0) {
                     this.searchIndex = backward ? this.searchResults.length - 1 : 0;
                     this.goToSearchResult();
@@ -842,46 +852,46 @@
                     console.log('No matches found');
                 }
             }
-            
+
             findNext() {
                 if (this.searchResults.length === 0) {
                     console.log('No search results');
                     return;
                 }
-                
+
                 this.searchIndex = (this.searchIndex + 1) % this.searchResults.length;
                 this.goToSearchResult();
                 console.log(`Next match: ${this.searchIndex + 1}/${this.searchResults.length}`);
             }
-            
+
             findPrevious() {
                 if (this.searchResults.length === 0) {
                     console.log('No search results');
                     return;
                 }
-                
+
                 this.searchIndex = (this.searchIndex - 1 + this.searchResults.length) % this.searchResults.length;
                 this.goToSearchResult();
                 console.log(`Previous match: ${this.searchIndex + 1}/${this.searchResults.length}`);
             }
-            
+
             goToSearchResult() {
                 if (this.searchIndex >= 0 && this.searchIndex < this.searchResults.length) {
                     const result = this.searchResults[this.searchIndex];
                     this.selectMessage(result.messageIndex);
-                    
+
                     // Highlight the current match
                     this.clearSearchHighlights();
                     result.message.element.classList.add('search-current');
                 }
             }
-            
+
             previewSearch(term) {
                 // Remove previous highlights
                 this.clearSearchHighlights();
-                
+
                 if (!term.trim()) return;
-                
+
                 // Highlight matches in real-time
                 this.messages.forEach((message) => {
                     if (message.content.toLowerCase().includes(term.toLowerCase())) {
@@ -889,25 +899,25 @@
                     }
                 });
             }
-            
+
             clearSearchHighlights() {
                 this.messages.forEach((message) => {
                     message.element.classList.remove('search-match', 'search-current');
                 });
             }
-            
+
             exitSearch() {
                 if (this.searchInput) {
                     this.searchInput.remove();
                     this.searchInput = null;
                 }
-                
+
                 this.clearSearchHighlights();
                 this.mode = 'GLOBAL';
                 this.updateModeIndicator();
                 console.log('Exited search mode');
             }
-            
+
             // Undo System
             undo() {
                 // Simple undo for message editing
@@ -923,7 +933,7 @@
                 }
             }
         }
-        
+
         // Message Component
         class VimMessage {
             constructor(data) {
@@ -935,19 +945,19 @@
                 this.originalContent = this.content; // Store original for cancel
                 this.isEditing = false;
                 this.isDraft = !data.id || data.id.startsWith('draft_'); // Draft if no real ID
-                this.cursorPosition = { line: 0, col: 0 };
+                this.cursorPosition = {line: 0, col: 0};
                 this.element = this.createElement();
                 this.textarea = null;
             }
-            
+
             extractDisplayText(data) {
                 console.log('Extracting display text from:', data);
-                
+
                 if (data.display_text && data.display_text.trim()) {
                     console.log('Using display_text:', data.display_text);
                     return data.display_text;
                 }
-                
+
                 if (data.content && Array.isArray(data.content)) {
                     console.log('Processing content array:', data.content);
                     const textParts = data.content
@@ -962,11 +972,11 @@
                         return result;
                     }
                 }
-                
+
                 console.log('No text content found, using fallback');
                 return `[No text content for ${data.role} message]`;
             }
-            
+
             createElement() {
                 const div = document.createElement('div');
                 let className = `message ${this.role} vim-message`;
@@ -974,57 +984,57 @@
                     className += ' draft-message';
                 }
                 div.className = className;
-                
+
                 // Create message ID element
                 const idDiv = document.createElement('div');
                 idDiv.className = 'message-id';
                 idDiv.textContent = this.isDraft ? `DRAFT: ${this.role}` : `ID: ${this.id}`;
-                
+
                 // Create message content element
                 const contentDiv = document.createElement('div');
                 contentDiv.className = 'message-content';
                 contentDiv.textContent = this.content || '[Empty message - press i to edit]';
-                
+
                 div.appendChild(idDiv);
                 div.appendChild(contentDiv);
-                
+
                 return div;
             }
-            
+
             enterEditMode(insertType) {
                 if (this.isEditing) return;
-                
+
                 this.isEditing = true;
                 this.element.classList.add('editing');
-                
+
                 // Create textarea overlay
                 this.textarea = document.createElement('textarea');
                 this.textarea.className = 'edit-textarea';
                 this.textarea.value = this.content;
                 this.textarea.placeholder = 'Type your message... (Cmd+Enter to send, Escape to finish editing)';
-                
+
                 // Position cursor based on insert type
                 this.positionCursor(insertType);
-                
+
                 // Hide content, show textarea
                 const contentDiv = this.element.querySelector('.message-content');
                 contentDiv.style.display = 'none';
-                
+
                 // Insert textarea after content
                 contentDiv.parentNode.insertBefore(this.textarea, contentDiv.nextSibling);
-                
+
                 // Focus and setup
                 this.textarea.focus();
                 this.setupTextareaEvents();
-                
+
                 console.log(`Editing mode: ${insertType}`);
             }
-            
+
             positionCursor(insertType) {
                 const text = this.textarea.value;
                 let position = 0;
-                
-                switch(insertType) {
+
+                switch (insertType) {
                     case 'insert':
                         position = 0; // Start of text
                         break;
@@ -1046,13 +1056,13 @@
                         position = 0;
                         break;
                 }
-                
+
                 // Set cursor position after a short delay
                 setTimeout(() => {
                     this.textarea.setSelectionRange(position, position);
                 }, 0);
             }
-            
+
             setupTextareaEvents() {
                 // Handle special keys in textarea
                 this.textarea.addEventListener('keydown', (e) => {
@@ -1078,29 +1088,29 @@
                         vimChat.exitEditMode(false);
                     }
                 });
-                
+
                 // Auto-resize textarea
                 this.textarea.addEventListener('input', () => {
                     this.autoResizeTextarea();
                 });
-                
+
                 // Initial resize
                 this.autoResizeTextarea();
             }
-            
+
             autoResizeTextarea() {
                 this.textarea.style.height = 'auto';
                 this.textarea.style.height = this.textarea.scrollHeight + 'px';
             }
-            
+
             exitEditMode(save) {
                 if (!this.isEditing) return;
-                
+
                 if (save) {
                     // Save the changes
                     this.content = this.textarea.value;
                     this.updateContentDisplay();
-                    
+
                     // TODO: Send update to server
                     console.log('Saved changes:', this.content);
                 } else {
@@ -1108,31 +1118,31 @@
                     this.content = this.originalContent;
                     console.log('Discarded changes');
                 }
-                
+
                 // Cleanup editing interface
                 this.isEditing = false;
                 this.element.classList.remove('editing');
-                
+
                 if (this.textarea) {
                     this.textarea.remove();
                     this.textarea = null;
                 }
-                
+
                 // Show content again
                 const contentDiv = this.element.querySelector('.message-content');
                 contentDiv.style.display = 'block';
             }
-            
+
             updateContentDisplay() {
                 const contentDiv = this.element.querySelector('.message-content');
                 contentDiv.textContent = this.content;
             }
-            
+
             moveCursor(direction) {
                 // For MESSAGE mode navigation within text
                 // This is a simple placeholder - could be enhanced for line/word navigation
                 console.log(`Moving cursor ${direction} in message ${this.id}`);
-                
+
                 // Visual feedback that we're navigating within the message
                 this.element.style.transform = 'translateX(2px)';
                 setTimeout(() => {
@@ -1140,21 +1150,21 @@
                 }, 100);
             }
         }
-        
+
         // Initialize vim interface
         const vimChat = new VimChatInterface();
-        
+
         function connect() {
             const wsUrl = `ws://${window.location.host}/ws`;
             ws = new WebSocket(wsUrl);
-            
+
             ws.onopen = () => {
                 statusEl.textContent = 'Connected';
                 statusEl.style.color = 'green';
                 clearMessages();
                 addMessage('system', 'WebSocket connected');
             };
-            
+
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
@@ -1163,7 +1173,7 @@
                     addMessage('error', `Parse error: ${e.message}`);
                 }
             };
-            
+
             ws.onclose = () => {
                 statusEl.textContent = 'Disconnected';
                 statusEl.style.color = 'red';
@@ -1171,31 +1181,31 @@
                 // Auto-reconnect after 3 seconds
                 setTimeout(connect, 3000);
             };
-            
+
             ws.onerror = (error) => {
                 statusEl.textContent = 'Error';
                 statusEl.style.color = 'red';
                 addMessage('error', `WebSocket error: ${error}`);
             };
         }
-        
+
         function handleMessage(data) {
             console.log('Received:', data);
-            
+
             switch (data.type) {
                 case 'connected':
                     conversationId = data.conversation_id;
                     conversationIdEl.textContent = conversationId;
                     addMessage('system', `Connected to conversation: ${conversationId}`);
                     // Request conversation history
-                    sendMessage({ type: 'get_conversation' });
+                    sendMessage({type: 'get_conversation'});
                     break;
-                    
+
                 case 'message_added':
                 case 'message_update':
                     displayMessage(data.message);
                     break;
-                    
+
                 case 'conversation_state':
                     clearMessages();
                     if (data.messages.length > 0) {
@@ -1204,52 +1214,55 @@
                         vimChat.messageRegistry.clear();
                         vimChat.messageTree.clear();
                         vimChat.headMessage = null;
-                        
+
                         // Load messages in chronological order to build proper tree
                         data.messages.forEach(msg => displayMessage(msg));
                     } else {
                         showNewConversationPrompt();
                     }
                     break;
-                    
+
                 case 'error':
                     addMessage('error', data.message);
                     break;
-                    
+
                 default:
                     addMessage('unknown', `Unknown message type: ${data.type}`);
             }
         }
-        
+
         function displayMessage(msg) {
             // Check if message already exists in our tree
             if (vimChat.messageExistsInTree(msg.id)) {
                 console.log('Skipping duplicate message with ID:', msg.id);
                 return;
             }
-            
+
             // Create the VimMessage object first
             const vimMessage = vimChat.addMessage(msg);
-            
+
             // Add to tree structure using the VimMessage object
             vimChat.addToMessageTree(vimMessage);
-            
+
             // Update conversation head if this is the newest message
             if (!msg.parent_id || msg.parent_id === vimChat.headMessage?.id) {
+                console.log('Updating conversation head to message ID:', vimMessage.id);
                 vimChat.headMessage = vimMessage;
+            } else {
+                console.log('Not updating head Message ID:', vimMessage.id, 'is a branch from parent ID:', msg.parent_id);
             }
-            
+
             // Display the message
             messagesEl.appendChild(vimMessage.element);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
-        
+
         function getDisplayText(msg) {
             // Simple text extraction from rich message content
             if (msg.display_text && msg.display_text.trim()) {
                 return msg.display_text;
             }
-            
+
             // Fallback: extract from content array
             if (msg.content && Array.isArray(msg.content)) {
                 const textParts = msg.content
@@ -1259,10 +1272,10 @@
                     return textParts.join('\n');
                 }
             }
-            
+
             return '[No text content]';
         }
-        
+
         function addMessage(type, text) {
             // Create a simple message object for system messages
             const systemMessage = {
@@ -1270,12 +1283,12 @@
                 role: type,
                 display_text: `${type}: ${text}`
             };
-            
+
             const vimMessage = vimChat.addMessage(systemMessage);
             messagesEl.appendChild(vimMessage.element);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
-        
+
         function clearMessages() {
             messagesEl.innerHTML = '';
             vimChat.messages = [];
@@ -1284,7 +1297,7 @@
             vimChat.messageTree.clear(); // Clear message tree
             vimChat.headMessage = null; // Reset conversation head
         }
-        
+
         function showNewConversationPrompt() {
             if (vimChat.messages.length === 0) {
                 const promptDiv = document.createElement('div');
@@ -1294,27 +1307,28 @@
                 messagesEl.appendChild(promptDiv);
             }
         }
-        
+
         function sendMessage(message) {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(message));
             }
         }
-        
+
         // sendUserMessage removed - now using vim message components
-        
+
         // Initialize with conversation-first approach
         function initializeInterface() {
             // Don't create initial draft - let user create it with 'o' when ready
             // This keeps the conversation history at the top
             console.log('Interface initialized - use "o" to create new message');
         }
-        
+
         // Start connection and initialize
         connect();
-        
+
         // Initialize interface after a short delay to ensure everything is loaded
         setTimeout(initializeInterface, 100);
     </script>
 </body>
+
 </html>
