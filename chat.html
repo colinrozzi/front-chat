@@ -469,9 +469,9 @@
 
                     if (message.isDraft && message.content.trim()) {
                         console.log('Generating completion for draft message:', message.content);
+                        console.log('Using parent_id from draft creation:', message.parent_id);
 
-                        // Set parent_id to current conversation head
-                        message.parent_id = this.headMessage?.id || null;
+                        // Parent_id is already set when draft was created - no need to modify it
 
                         // Generate deterministic ID based on content + parent (like Theater)
                         const messageId = await this.generateMessageId(message.content, message.role, message.parent_id);
@@ -484,8 +484,7 @@
                         // Add to message tree
                         this.addToMessageTree(message);
 
-                        // Update conversation head
-                        this.headMessage = message;
+                        // (Head tracking no longer needed for parent_id logic)
 
                         // Update ID display
                         const idDiv = message.element.querySelector('.message-id');
@@ -599,12 +598,24 @@
             }
 
             createNewDraftMessage() {
+                // Get parent from currently selected message
+                const parentId = this.selectedMessageIndex >= 0 ? 
+                    this.messages[this.selectedMessageIndex].id : null;
+                
                 const draftData = {
                     id: `draft_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                     role: 'user',
                     content: '',
-                    display_text: ''
+                    display_text: '',
+                    parent_id: parentId  // Set parent at draft creation time
                 };
+                
+                // Log for debugging
+                if (parentId) {
+                    console.log(`Creating draft reply to message: ${parentId}`);
+                } else {
+                    console.log('Creating root draft message (no parent)');
+                }
 
                 const draftMessage = this.addMessage(draftData);
                 messagesEl.appendChild(draftMessage.element);
@@ -768,6 +779,14 @@
 
             createNewMessage() {
                 console.log('Creating new draft message');
+                
+                // Show which message will be the parent
+                if (this.selectedMessageIndex >= 0) {
+                    const parentMessage = this.messages[this.selectedMessageIndex];
+                    console.log(`New message will reply to: ${parentMessage.id}`);
+                } else {
+                    console.log('New message will be a root message (no parent)');
+                }
 
                 // Clear the new conversation prompt if it exists
                 const statusElements = messagesEl.querySelectorAll('.status');
@@ -1244,13 +1263,10 @@
             // Add to tree structure using the VimMessage object
             vimChat.addToMessageTree(vimMessage);
 
-            // Update conversation head if this is the newest message
-            if (!msg.parent_id || msg.parent_id === vimChat.headMessage?.id) {
-                console.log('Updating conversation head to message ID:', vimMessage.id);
-                vimChat.headMessage = vimMessage;
-            } else {
-                console.log('Not updating head Message ID:', vimMessage.id, 'is a branch from parent ID:', msg.parent_id);
-            }
+            // Keep simple head tracking for debugging purposes
+            // (No longer used for parent_id logic)
+            vimChat.headMessage = vimMessage;
+            console.log('Message added to tree:', vimMessage.id, 'parent:', msg.parent_id || 'none');
 
             // Display the message
             messagesEl.appendChild(vimMessage.element);
