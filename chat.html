@@ -1181,7 +1181,6 @@
                 statusEl.textContent = 'Connected';
                 statusEl.style.color = 'green';
                 clearMessages();
-                addMessage('system', 'WebSocket connected');
             };
 
             ws.onmessage = (event) => {
@@ -1196,7 +1195,6 @@
             ws.onclose = () => {
                 statusEl.textContent = 'Disconnected';
                 statusEl.style.color = 'red';
-                addMessage('system', 'WebSocket disconnected');
                 // Auto-reconnect after 3 seconds
                 setTimeout(connect, 3000);
             };
@@ -1215,7 +1213,6 @@
                 case 'connected':
                     conversationId = data.conversation_id;
                     conversationIdEl.textContent = conversationId;
-                    addMessage('system', `Connected to conversation: ${conversationId}`);
                     // Request conversation history
                     sendMessage({type: 'get_conversation'});
                     break;
@@ -1228,7 +1225,6 @@
                 case 'conversation_state':
                     clearMessages();
                     if (data.messages.length > 0) {
-                        addMessage('system', `Loaded ${data.messages.length} messages`);
                         // Reset message tree when loading conversation state
                         vimChat.messageRegistry.clear();
                         vimChat.messageTree.clear();
