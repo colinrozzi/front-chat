@@ -159,6 +159,71 @@
             color: #9CA3AF;
             font-style: italic;
         }
+
+        /* Help Modal Styles */
+        .help-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .help-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 700px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .help-content h2 {
+            margin-top: 0;
+            margin-bottom: 20px;
+            color: #333;
+            border-bottom: 2px solid #4A90E2;
+            padding-bottom: 10px;
+        }
+
+        .help-content h3 {
+            margin-top: 20px;
+            margin-bottom: 10px;
+            color: #4A90E2;
+            font-size: 16px;
+        }
+
+        .help-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 15px;
+        }
+
+        .help-content td {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .help-content td:first-child {
+            font-weight: bold;
+            color: #666;
+            width: 120px;
+        }
+
+        .help-content .help-footer {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+        }
     </style>
 </head>
 
@@ -350,6 +415,9 @@
                         break;
                     case 'u':
                         this.undo();
+                        break;
+                    case 'h':
+                        this.showHelp();
                         break;
                     case 'z':
                         // Handle 'zz' for center screen (future feature)
@@ -949,6 +1017,98 @@
                     } else {
                         console.log('Nothing to undo for this message');
                     }
+                }
+            }
+
+            // Help System
+            showHelp() {
+                // Create help modal
+                const modal = document.createElement('div');
+                modal.className = 'help-modal';
+                modal.id = 'helpModal';
+
+                const content = document.createElement('div');
+                content.className = 'help-content';
+                content.innerHTML = `
+                    <h2>📖 Vim Chat Interface - Help</h2>
+                    
+                    <h3>🌍 GLOBAL Mode</h3>
+                    <table>
+                        <tr><td>j / k</td><td>Navigate down/up through messages</td></tr>
+                        <tr><td>gg / G</td><td>Go to first/last message</td></tr>
+                        <tr><td>Enter</td><td>Enter MESSAGE mode for selected message</td></tr>
+                        <tr><td>o</td><td>Create new user message</td></tr>
+                        <tr><td>dd</td><td>Delete current message</td></tr>
+                        <tr><td>/ or ?</td><td>Start forward/backward search</td></tr>
+                        <tr><td>n / N</td><td>Next/previous search result</td></tr>
+                        <tr><td>u</td><td>Undo message changes</td></tr>
+                        <tr><td>h</td><td>Show this help</td></tr>
+                        <tr><td>Cmd+Enter</td><td>Quick send (generate AI response)</td></tr>
+                    </table>
+
+                    <h3>💬 MESSAGE Mode</h3>
+                    <table>
+                        <tr><td>Escape</td><td>Return to GLOBAL mode</td></tr>
+                        <tr><td>i</td><td>Enter EDITING mode (insert at cursor)</td></tr>
+                        <tr><td>a</td><td>Enter EDITING mode (append after cursor)</td></tr>
+                        <tr><td>I</td><td>Insert at start of message</td></tr>
+                        <tr><td>A</td><td>Append at end of message</td></tr>
+                        <tr><td>o / O</td><td>New line below/above</td></tr>
+                        <tr><td>dd</td><td>Delete current line</td></tr>
+                        <tr><td>yy</td><td>Yank (copy) current line</td></tr>
+                        <tr><td>p</td><td>Paste copied content</td></tr>
+                        <tr><td>x</td><td>Delete character</td></tr>
+                        <tr><td>Cmd+Enter</td><td>Send message (generate AI response)</td></tr>
+                    </table>
+
+                    <h3>✏️ EDITING Mode</h3>
+                    <table>
+                        <tr><td>Escape</td><td>Save and return to MESSAGE mode</td></tr>
+                        <tr><td>Cmd+Enter</td><td>Save and send message</td></tr>
+                        <tr><td>Type freely</td><td>Edit message content</td></tr>
+                    </table>
+
+                    <h3>🔍 SEARCH Mode</h3>
+                    <table>
+                        <tr><td>Type</td><td>Search messages in real-time</td></tr>
+                        <tr><td>Enter</td><td>Confirm search</td></tr>
+                        <tr><td>Escape</td><td>Exit search mode</td></tr>
+                        <tr><td>n / N</td><td>Navigate through results</td></tr>
+                    </table>
+
+                    <div class="help-footer">
+                        Press Escape or click outside to close this help
+                    </div>
+                `;
+
+                modal.appendChild(content);
+                document.body.appendChild(modal);
+
+                // Close on click outside or Escape
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        this.hideHelp();
+                    }
+                });
+
+                const escapeListener = (e) => {
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        this.hideHelp();
+                        document.removeEventListener('keydown', escapeListener);
+                    }
+                };
+                document.addEventListener('keydown', escapeListener);
+
+                console.log('Help displayed');
+            }
+
+            hideHelp() {
+                const modal = document.getElementById('helpModal');
+                if (modal) {
+                    modal.remove();
+                    console.log('Help closed');
                 }
             }
         }
